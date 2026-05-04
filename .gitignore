@@ -1,0 +1,31 @@
+# ==========================================
+# STM32CubeIDE & Eclipse 專案忽略規則
+# ==========================================
+
+# 1. 忽略編譯輸出的資料夾
+Debug/
+Release/
+
+# 2. 忽略 IDE 個人工作區與設定檔 (會因電腦而異，極易衝突)
+.metadata/
+.settings/
+.cproject
+.project
+*.launch
+
+# 3. 忽略編譯過程中產生的中介檔與執行檔
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.su
+
+# 4. 作業系統產生的隱藏檔
+.DS_Store
+Thumbs.db
+
+# 5. 可選：忽略 CubeMX 備份檔
+*.bak
