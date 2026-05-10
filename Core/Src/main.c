@@ -88,18 +88,48 @@ const osThreadAttr_t Telemetry_Task_attributes = {
   .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityBelowNormal,
 };
+/* Definitions for IMU_Task */
+osThreadId_t IMU_TaskHandle;
+const osThreadAttr_t IMU_Task_attributes = {
+  .name = "IMU_Task",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /* Definitions for myBinarySem01 */
 osSemaphoreId_t myBinarySem01Handle;
 const osSemaphoreAttr_t myBinarySem01_attributes = {
   .name = "myBinarySem01"
 };
 /* USER CODE BEGIN PV */
-osMessageQueueId_t distQueueHandle; // 剛剛建立的 Queue
+osMessageQueueId_t distQueueHandle;
 VL53L0X_Dev_t Dev;
 
-// --- 新增以下變數 ---
-volatile uint32_t global_display_dmm = 0; // 給 UART Task 讀取的顯示距離 (0.1mm)
-volatile uint32_t idle_tick_count = 0;    // 紀錄靜止不動的時長
+volatile uint32_t global_display_dmm = 0;
+volatile uint32_t idle_tick_count = 0;
+
+// === 新增：I2C2 Mutex 宣告 ===
+osMutexId_t i2c2MutexHandle;
+const osMutexAttr_t i2c2Mutex_attributes = {
+  .name = "i2c2Mutex"
+};
+
+// === 新增：LSM6DSL I2C 定義 (為下一步準備) ===
+#define LSM6DSL_ADDR         (0x6A << 1) // 8-bit Address: 0xD4
+#define LSM6DSL_WHO_AM_I     0x0F
+#define LSM6DSL_CTRL1_XL     0x10  // 加速度計控制
+#define LSM6DSL_CTRL2_G      0x11  // 陀螺儀控制
+#define LSM6DSL_OUTX_L_G     0x22  // 陀螺儀數據起始位址
+#define LSM6DSL_OUTX_L_XL    0x28  // 加速度計數據起始位址
+
+// === 新增：IMU 資料結構與全域變數 ===
+typedef struct {
+    int16_t ax, ay, az; // 加速度
+    int16_t gx, gy, gz; // 陀螺儀
+} IMU_Data_t;
+
+volatile IMU_Data_t global_imu_data = {0};
+
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -116,9 +146,10 @@ void StartDefaultTask(void *argument);
 void StartTask02(void *argument);
 void StartTask03(void *argument);
 void StartTask04(void *argument);
+void StartIMUTask(void *argument);
 
 /* USER CODE BEGIN PFP */
-
+void StartIMUTask(void *argument);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -171,6 +202,11 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
+  i2c2MutexHandle = osMutexNew(&i2c2Mutex_attributes); // 建立 I2C2 互斥鎖
+  if (i2c2MutexHandle == NULL) {
+      // Mutex 建立失敗的錯誤處理，一般來說不會發生
+      Error_Handler();
+  }
   /* USER CODE END RTOS_MUTEX */
 
   /* Create the semaphores(s) */
@@ -202,6 +238,9 @@ int main(void)
 
   /* creation of Telemetry_Task */
   Telemetry_TaskHandle = osThreadNew(StartTask04, NULL, &Telemetry_Task_attributes);
+
+  /* creation of IMU_Task */
+  IMU_TaskHandle = osThreadNew(StartIMUTask, NULL, &IMU_Task_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -798,47 +837,30 @@ void StartTask02(void *argument)
   char msg[64];
   int len;
 
-  // 用於 SPAD 校正的變數
   uint32_t refSpadCount;
   uint8_t isApertureSpads;
   uint8_t VhvSettings;
   uint8_t PhaseCal;
 
-  // --- 喚醒感測器 ---
   HAL_GPIO_WritePin(GPIOC, VL53L0X_XSHUT_Pin, GPIO_PIN_SET);
-  osDelay(50); // 給感測器開機時間
+  osDelay(50);
 
   Dev.I2cHandle = &hi2c2;
   Dev.I2cDevAddr = 0x52;
 
-  len = snprintf(msg, sizeof(msg), "[ToF] Waiting Device Booted...\r\n");
-  HAL_UART_Transmit(&huart1, (uint8_t*)msg, len, 100);
+  // --- 初始化階段 (使用 Mutex 保護) ---
+  osMutexAcquire(i2c2MutexHandle, osWaitForever); // 取得 I2C2 控制權
+
   VL53L0X_WaitDeviceBooted(&Dev);
-
-  len = snprintf(msg, sizeof(msg), "[ToF] Data Init...\r\n");
-  HAL_UART_Transmit(&huart1, (uint8_t*)msg, len, 100);
   VL53L0X_DataInit(&Dev);
-
-  len = snprintf(msg, sizeof(msg), "[ToF] Static Init...\r\n");
-  HAL_UART_Transmit(&huart1, (uint8_t*)msg, len, 100);
   VL53L0X_StaticInit(&Dev);
-
-  // --- 完整的 SPAD 與溫度校正流程 ---
-  len = snprintf(msg, sizeof(msg), "[ToF] Performing Calibration...\r\n");
-  HAL_UART_Transmit(&huart1, (uint8_t*)msg, len, 100);
-
-  // 1. SPAD 校正
   VL53L0X_PerformRefSpadManagement(&Dev, &refSpadCount, &isApertureSpads);
-
-  // 2. 溫度與相位校正
   VL53L0X_PerformRefCalibration(&Dev, &VhvSettings, &PhaseCal);
-
-  // 3. 設定測量模式為「連續單次」
   VL53L0X_SetDeviceMode(&Dev, VL53L0X_DEVICEMODE_SINGLE_RANGING);
-
-  // 4. 設定測量時間 (Timing Budget)
   VL53L0X_SetMeasurementTimingBudgetMicroSeconds(&Dev, 33000);
-  // ----------------------------------------------------
+
+  osMutexRelease(i2c2MutexHandle); // 釋放 I2C2 控制權
+  // ------------------------------------
 
   len = snprintf(msg, sizeof(msg), "[ToF] Init Complete. Starting Loop...\r\n");
   HAL_UART_Transmit(&huart1, (uint8_t*)msg, len, 100);
@@ -846,27 +868,26 @@ void StartTask02(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    // 改用「單次測量」API
+    // --- 測量階段 (使用 Mutex 保護) ---
+    osMutexAcquire(i2c2MutexHandle, osWaitForever); // 取得控制權
     VL53L0X_PerformSingleRangingMeasurement(&Dev, &RangingData);
+    osMutexRelease(i2c2MutexHandle); // 釋放控制權
+    // ------------------------------------
 
-    // 放寬過濾條件：只要大於 0 且沒有 Out of range 就算有效
     if(RangingData.RangeMilliMeter > 0 && RangingData.RangeMilliMeter < 8000)
     {
        uint32_t current_dmm = MM_TO_DMM(RangingData.RangeMilliMeter);
 
-       // 移動平均濾波 (DSP)
        sum -= filter_buf[buf_idx];
        filter_buf[buf_idx] = current_dmm;
        sum += filter_buf[buf_idx];
        buf_idx = (buf_idx + 1) % FILTER_SIZE;
 
        uint32_t stable_dist = sum / FILTER_SIZE;
-
-       // 將過濾後的數據放入 Queue，通知 Logic Task 更新畫面
        osMessageQueuePut(distQueueHandle, &stable_dist, 0, 10);
     }
 
-    osDelay(20); // 50Hz 採樣率
+    osDelay(20);
   }
   /* USER CODE END StartTask02 */
 }
@@ -941,31 +962,86 @@ void StartTask03(void *argument)
 void StartTask04(void *argument)
 {
   /* USER CODE BEGIN StartTask04 */
-  char uart_buf[64];
+  char uart_buf[100];
 
   /* Infinite loop */
   for(;;)
   {
-    // 1. 取得最新要顯示的距離
     uint32_t dist = global_display_dmm;
-
-    // 2. 定點運算字串格式化 (不使用 float)
-    // dist 單位是 0.1 mm，除以 10 得到整數部分，取餘數得到小數第一位
     uint32_t dist_int = dist / 10;
     uint32_t dist_frac = dist % 10;
 
-    // 3. 組合字串 (使用 %lu 處理 uint32_t 型態)
+    // --- 修改：加入 IMU 的加速度計數值 (AX, AY, AZ) ---
     int len = snprintf(uart_buf, sizeof(uart_buf),
-                       "Distance: %lu.%lu mm | Idle: %lu ms\r\n",
-                       dist_int, dist_frac, idle_tick_count);
+                       "Dist: %lu.%lu mm | AX: %6d | AY: %6d | AZ: %6d\r\n",
+                       dist_int, dist_frac,
+                       global_imu_data.ax, global_imu_data.ay, global_imu_data.az);
 
-    // 4. 透過 UART1 傳送 (使用輪詢方式傳送，因資料量小且 Task 優先權較低)
     HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, HAL_MAX_DELAY);
 
-    // 5. 控制傳送頻率為 10Hz (100ms)
-    osDelay(100);
+    osDelay(100); // 維持 10Hz 輸出
   }
   /* USER CODE END StartTask04 */
+}
+
+/* USER CODE BEGIN Header_StartIMUTask */
+/**
+* @brief Function implementing the IMU_Task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartIMUTask */
+void StartIMUTask(void *argument)
+{
+  /* USER CODE BEGIN StartIMUTask */
+  uint8_t whoAmI = 0;
+  uint8_t ctrl[2];
+  uint8_t raw_data[12];
+
+  // --- 1. IMU 初始化階段 (使用 Mutex 保護) ---
+  osDelay(100); // 等待感測器穩定
+  osMutexAcquire(i2c2MutexHandle, osWaitForever);
+
+  // 檢查 WHO_AM_I (LSM6DSL 應回傳 0x6A)
+  HAL_I2C_Mem_Read(&hi2c2, LSM6DSL_ADDR, LSM6DSL_WHO_AM_I, 1, &whoAmI, 1, 100);
+
+  if (whoAmI == 0x6A) {
+      // 啟動加速度計 (CTRL1_XL): 104Hz, +/- 2g
+      ctrl[0] = 0x40;
+      HAL_I2C_Mem_Write(&hi2c2, LSM6DSL_ADDR, LSM6DSL_CTRL1_XL, 1, &ctrl[0], 1, 100);
+
+      // 啟動陀螺儀 (CTRL2_G): 104Hz, 2000 dps
+      ctrl[1] = 0x4C;
+      HAL_I2C_Mem_Write(&hi2c2, LSM6DSL_ADDR, LSM6DSL_CTRL2_G, 1, &ctrl[1], 1, 100);
+  }
+
+  osMutexRelease(i2c2MutexHandle);
+  // ---------------------------------------------
+
+  /* Infinite loop */
+  for(;;)
+  {
+    if (whoAmI == 0x6A) {
+        // --- 2. 測量階段 (使用 Mutex 保護) ---
+        osMutexAcquire(i2c2MutexHandle, osWaitForever);
+        // LSM6DSL 支援自動遞增地址，從 OUTX_L_G (0x22) 連續讀取 12 Bytes
+        HAL_I2C_Mem_Read(&hi2c2, LSM6DSL_ADDR, LSM6DSL_OUTX_L_G, 1, raw_data, 12, 100);
+        osMutexRelease(i2c2MutexHandle);
+
+        // --- 3. 解析數據 (Little Endian 轉換) ---
+        // 前 6 Bytes 是陀螺儀 (Gyro)，後 6 Bytes 是加速度計 (Accel)
+        global_imu_data.gx = (int16_t)((raw_data[1] << 8) | raw_data[0]);
+        global_imu_data.gy = (int16_t)((raw_data[3] << 8) | raw_data[2]);
+        global_imu_data.gz = (int16_t)((raw_data[5] << 8) | raw_data[4]);
+
+        global_imu_data.ax = (int16_t)((raw_data[7] << 8) | raw_data[6]);
+        global_imu_data.ay = (int16_t)((raw_data[9] << 8) | raw_data[8]);
+        global_imu_data.az = (int16_t)((raw_data[11] << 8) | raw_data[10]);
+    }
+
+    osDelay(20); // 50Hz 更新頻率
+  }
+  /* USER CODE END StartIMUTask */
 }
 
 /**
