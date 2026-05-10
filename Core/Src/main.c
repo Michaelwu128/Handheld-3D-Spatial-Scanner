@@ -134,6 +134,8 @@ volatile IMU_Data_t global_imu_data = {0};
 volatile float global_roll = 0.0f;
 volatile float global_pitch = 0.0f;
 
+// === 新增：掃描狀態旗標 ===
+volatile uint8_t is_scanning = 0; // 0: 待機 (Standby), 1: 掃描中 (Scanning)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -907,7 +909,6 @@ void StartTask03(void *argument)
   uint32_t d_now = 0;
   uint32_t d_base = 0;
   uint32_t d_display = 0;
-  static uint32_t prev_d_now = 0; // 靜態變數宣告在迴圈外
 
   /* Infinite loop */
   for(;;)
@@ -915,41 +916,33 @@ void StartTask03(void *argument)
     // 從 Queue 接收感測器資料 (Block 等待)
     if (osMessageQueueGet(distQueueHandle, &d_now, NULL, osWaitForever) == osOK)
     {
-      // 檢查 User Button 是否按下 (從 ISR 釋放 Semaphore)
+      // --- 1. 偵測藍色按鍵 (User Button) 觸發 ---
+      // osSemaphoreAcquire 設為 0 代表「不等待，有信號就拿，沒信號就略過」
       if (osSemaphoreAcquire(myBinarySem01Handle, 0) == osOK) {
-        d_base = d_now; // 記錄基準點
+        is_scanning = !is_scanning; // 切換狀態：0變1, 1變0
+
+        if (is_scanning == 1) {
+            // 第一次按下：開始掃描，執行 Auto-Tare (將當下距離設為 0 原點)
+            d_base = d_now;
+        }
       }
 
-      // 計算絕對差值
+      // 2. 距離運算 (以 d_base 為基準點)
       d_display = (d_now >= d_base) ? (d_now - d_base) : (d_base - d_now);
-
-      // 更新全域變數，供 UART Task 使用
       global_display_dmm = d_display;
 
-      // 休眠偵測機制：如果距離變化很小 (小於 5mm = 50 dmm)，開始計時
-      if (abs((int)(d_now - prev_d_now)) < 50) {
-        idle_tick_count += 50; // Logic Task 執行頻率為 20Hz (50ms)
+      // --- 3. LED 狀態指示 ---
+      // 先把所有指示燈關閉
+      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET); // 綠燈
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET); // 紅燈
+      HAL_GPIO_WritePin(GPIOC, LED3_WIFI__LED4_BLE_Pin, GPIO_PIN_RESET); // 藍燈
+
+      if (is_scanning) {
+          // 狀態 [掃描中]：亮綠燈，代表正在記錄數據
+          HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
       } else {
-        idle_tick_count = 0; // 有移動，重置計時器
-      }
-      prev_d_now = d_now;
-
-      // --- LED 狀態控制 ---
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(GPIOC, LED3_WIFI__LED4_BLE_Pin, GPIO_PIN_RESET);
-
-      if (d_display < 1000) {
-        // < 10 cm：紅燈亮
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
-      }
-      else if (d_display < 5000) {
-        // 10~50 cm：綠燈亮
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-      }
-      else {
-        // > 50 cm：藍燈亮
-        HAL_GPIO_WritePin(GPIOC, LED3_WIFI__LED4_BLE_Pin, GPIO_PIN_SET);
+          // 狀態 [待機中]：亮紅燈，代表停止記錄
+          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
       }
     }
   }
@@ -959,39 +952,35 @@ void StartTask03(void *argument)
 /* USER CODE BEGIN Header_StartTask04 */
 /**
 * @brief Function implementing the Telemetry_Task thread.
-* @param argument: Not used
-* @retval None
 */
 /* USER CODE END Header_StartTask04 */
 void StartTask04(void *argument)
 {
   /* USER CODE BEGIN StartTask04 */
-  char uart_buf[128]; // 加大 buffer 確保字串塞得下
+  char uart_buf[128];
 
   /* Infinite loop */
   for(;;)
   {
-    // 1. 取得真實距離 (轉回浮點數 mm)
-    float r = (float)global_display_dmm / 10.0f;
+    // --- 加上閘門：只有在掃描狀態才計算並輸出 ---
+    if (is_scanning) {
+        float r = (float)global_display_dmm / 10.0f;
+        float pitch_rad = global_pitch * (3.14159265f / 180.0f);
+        float roll_rad  = global_roll  * (3.14159265f / 180.0f);
 
-    // 2. 將角度轉回弧度 (Radian)，以便 math.h 處理
-    float pitch_rad = global_pitch * (3.14159265f / 180.0f);
-    float roll_rad  = global_roll  * (3.14159265f / 180.0f);
+        float px = r * sinf(pitch_rad) * cosf(roll_rad);
+        float py = -r * sinf(roll_rad);
+        float pz = r * cosf(pitch_rad) * cosf(roll_rad);
 
-    // 3. 核心算式：球座標轉直角座標 (Z軸朝前投影)
-    float px = r * sinf(pitch_rad) * cosf(roll_rad);
-    float py = -r * sinf(roll_rad);
-    float pz = r * cosf(pitch_rad) * cosf(roll_rad);
+        int len = snprintf(uart_buf, sizeof(uart_buf),
+                           "%.1f,%.1f,%.1f\r\n",
+                           px, py, pz);
 
-    // 4. 修改 UART 輸出格式，設計成容易讓 Python 解析的格式 (CSV 風格)
-    // 格式: X,Y,Z
-    int len = snprintf(uart_buf, sizeof(uart_buf),
-                       "%.1f,%.1f,%.1f\r\n",
-                       px, py, pz);
+        HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, HAL_MAX_DELAY);
+    }
 
-    HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, HAL_MAX_DELAY);
-
-    osDelay(100); // 維持 10Hz 的輸出頻率
+    // 無論有沒有在掃描，都要延遲，維持系統排程穩定 (10Hz)
+    osDelay(100);
   }
   /* USER CODE END StartTask04 */
 }
