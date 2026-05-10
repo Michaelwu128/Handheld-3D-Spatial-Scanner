@@ -966,24 +966,32 @@ void StartTask03(void *argument)
 void StartTask04(void *argument)
 {
   /* USER CODE BEGIN StartTask04 */
-  char uart_buf[100];
+  char uart_buf[128]; // 加大 buffer 確保字串塞得下
 
   /* Infinite loop */
   for(;;)
   {
-    uint32_t dist = global_display_dmm;
-    uint32_t dist_int = dist / 10;
-    uint32_t dist_frac = dist % 10;
+    // 1. 取得真實距離 (轉回浮點數 mm)
+    float r = (float)global_display_dmm / 10.0f;
 
-    // --- 修改：印出距離與算出來的姿態角 ---
-	int len = snprintf(uart_buf, sizeof(uart_buf),
-					   "Dist: %lu.%lu mm | Roll: %5.1f deg | Pitch: %5.1f deg\r\n",
-					   dist_int, dist_frac,
-					   global_roll, global_pitch);
+    // 2. 將角度轉回弧度 (Radian)，以便 math.h 處理
+    float pitch_rad = global_pitch * (3.14159265f / 180.0f);
+    float roll_rad  = global_roll  * (3.14159265f / 180.0f);
+
+    // 3. 核心算式：球座標轉直角座標 (Z軸朝前投影)
+    float px = r * sinf(pitch_rad) * cosf(roll_rad);
+    float py = -r * sinf(roll_rad);
+    float pz = r * cosf(pitch_rad) * cosf(roll_rad);
+
+    // 4. 修改 UART 輸出格式，設計成容易讓 Python 解析的格式 (CSV 風格)
+    // 格式: X,Y,Z
+    int len = snprintf(uart_buf, sizeof(uart_buf),
+                       "%.1f,%.1f,%.1f\r\n",
+                       px, py, pz);
 
     HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, HAL_MAX_DELAY);
 
-    osDelay(100); // 維持 10Hz 輸出
+    osDelay(100); // 維持 10Hz 的輸出頻率
   }
   /* USER CODE END StartTask04 */
 }
