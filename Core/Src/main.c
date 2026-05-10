@@ -27,6 +27,7 @@
 #include "vl53l0x_api.h"
 #include <stdio.h>
 #include <stdlib.h> // <--- 補上這行給 abs() 使用
+#include <math.h>   // <--- 新增這行：供姿態運算使用
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -129,6 +130,9 @@ typedef struct {
 
 volatile IMU_Data_t global_imu_data = {0};
 
+// === 新增：姿態角全域變數 ===
+volatile float global_roll = 0.0f;
+volatile float global_pitch = 0.0f;
 
 /* USER CODE END PV */
 
@@ -971,11 +975,11 @@ void StartTask04(void *argument)
     uint32_t dist_int = dist / 10;
     uint32_t dist_frac = dist % 10;
 
-    // --- 修改：加入 IMU 的加速度計數值 (AX, AY, AZ) ---
-    int len = snprintf(uart_buf, sizeof(uart_buf),
-                       "Dist: %lu.%lu mm | AX: %6d | AY: %6d | AZ: %6d\r\n",
-                       dist_int, dist_frac,
-                       global_imu_data.ax, global_imu_data.ay, global_imu_data.az);
+    // --- 修改：印出距離與算出來的姿態角 ---
+	int len = snprintf(uart_buf, sizeof(uart_buf),
+					   "Dist: %lu.%lu mm | Roll: %5.1f deg | Pitch: %5.1f deg\r\n",
+					   dist_int, dist_frac,
+					   global_roll, global_pitch);
 
     HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, HAL_MAX_DELAY);
 
@@ -1037,6 +1041,18 @@ void StartIMUTask(void *argument)
         global_imu_data.ax = (int16_t)((raw_data[7] << 8) | raw_data[6]);
         global_imu_data.ay = (int16_t)((raw_data[9] << 8) | raw_data[8]);
         global_imu_data.az = (int16_t)((raw_data[11] << 8) | raw_data[10]);
+        // --- 4. 姿態角運算 (AHRS) ---
+		// 1. 將 Raw Data 轉換為實際的 g 值 (除以 16384.0)
+		float ax_g = (float)global_imu_data.ax / 16384.0f;
+		float ay_g = (float)global_imu_data.ay / 16384.0f;
+		float az_g = (float)global_imu_data.az / 16384.0f;
+
+		// 2. 利用 atan2 計算 Roll 與 Pitch，並將弧度 (Radian) 轉為角度 (Degree)
+		// Roll: 繞 X 軸旋轉的角度
+		global_roll = atan2f(ay_g, az_g) * (180.0f / 3.14159265f);
+
+		// Pitch: 繞 Y 軸旋轉的角度
+		global_pitch = atan2f(-ax_g, sqrtf(ay_g * ay_g + az_g * az_g)) * (180.0f / 3.14159265f);
     }
 
     osDelay(20); // 50Hz 更新頻率
