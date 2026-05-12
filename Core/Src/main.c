@@ -39,7 +39,7 @@
 /* USER CODE BEGIN PD */
 /* 定點運算：將 mm 轉為 0.1mm (deci-millimeter) */
 #define MM_TO_DMM(x) ((uint32_t)(x) * 10)
-#define FILTER_SIZE 8
+#define FILTER_SIZE 1  // <--- 將這裡改成 1，關閉平滑濾波，保留真實的邊緣跳變
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
