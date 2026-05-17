@@ -1,115 +1,68 @@
+🚀 Wireless 3D Handheld Scanner (無線 3D 手持掃描儀)
+這是一個基於 STM32L475 開發板打造的「無線 3D 手持掃描儀」專案。透過整合 ToF 測距儀 (VL53L0X) 與 IMU 姿態感測器 (LSM6DSL)，結合 FreeRTOS 即時作業系統與 BLE 低功耗藍牙，將即時的三維空間座標傳送至電腦端，並透過 Python 進行即時的 3D 點雲 (Point Cloud) 渲染。
 
-## <b>SensorDemo_BLESensor-App Application Description</b>
-  
-This application shows how to implement proprietary BLE profiles.
-The communication is done using a STM32 Nucleo board and a Smartphone with BTLE.
+✨ 系統特色
+完全無線化： 捨棄傳統有線 UART，改用 BLE 藍牙傳輸，大幅提升手持掃描時的自由度與可操作性。
 
-Example Description:
+高流暢度 3D 渲染： 電腦端 Python 採用高效能點雲資料替換技術 (更新 _offsets3d)，捨棄耗能的整頁重繪 (ax.clear())，確保畫面維持高幀率運作。
 
-This application shows how to implement a peripheral device tailored for 
-interacting with the "ST BLE Sensor" app for Android/iOS devices.
+雙燈號獨立指示系統： 將藍牙連線狀態與掃描狀態分離，透過板載的不同 LED 提供最直覺的硬體狀態回饋。
 
-The "ST BLE Sensor" app is freely available on both GooglePlay and iTunes
-  - iTunes: https://itunes.apple.com/us/app/st-bluems/id993670214
-  - GooglePlay: https://play.google.com/store/apps/details?id=com.st.bluems
-The source code of the "ST BLE Sensor" app is available on GitHub at:
-  - iOS: https://github.com/STMicroelectronics-CentralLabs/STBlueMS_iOS
-  - Android: https://github.com/STMicroelectronics-CentralLabs/STBlueMS_Android
+即時視角切換： 支援鍵盤快捷鍵，一鍵切換 3D 空間視角 (正視、側視、俯視)。
 
-@note: NO SUPPORT WILL BE PROVIDED TO YOU BY STMICROELECTRONICS FOR ANY OF THE
-ANDROID/iOS app INCLUDED IN OR REFERENCED BY THIS PACKAGE.
+💻 電腦端環境建置 (Python)
+為了接收藍牙資料並繪製 3D 圖表，請確保電腦已安裝 Python (建議版本 3.8 以上)，並安裝以下必要的套件：
 
-After establishing the connection between the STM32 board and the smartphone:
- -  the temperature and the pressure emulated values are sent by the STM32 board to 
-    the mobile device and are shown in the ENVIRONMENTAL tab;
- -  the emulated sensor fusion data sent by the STM32 board to the mobile device 
-    reflects into the cube rotation showed in the app's MEMS SENSOR FUSION tab
- -  the plot of the emulated data (temperature, pressure, sensor fusion data, 
-    accelerometer, gyroscope and magnetometer) sent by the board are shown in the 
-	PLOT DATA tab;
- -  in the RSSI & Battery tab the RSSI value is shown.
-According to the value of the #define USE_BUTTON in file app_bluenrg_ms.c, the 
-environmental and the motion data can be sent automatically (with 1 sec period) 
-or when the User Button is pressed.
+打開終端機 (Terminal / PowerShell / 命令提示字元)。
 
-The communication is done using a vendor specific profile.
+輸入以下指令安裝藍牙與繪圖套件：
 
-Known limitations:
+Bash
+pip install bleak matplotlib
+(註：bleak 是負責跨平台低功耗藍牙通訊的套件，matplotlib 負責 3D 即時繪圖。)
 
-- When starting the project from Example Selector in STM32CubeMX and regenerating it
-  from ioc file, you may face a build issue. To solve it, if you started the project for the
-  Nucleo-L476RG board, remove from the IDE project the file stm32l4xx_nucleo.c in the Application/User
-  virtual folder and delete, from Src and Inc folders, the files: stm32l4xx_nucleo.c, stm32l4xx_nucleo.h
-  and stm32l4xx_nucleo_errno.h.
+🛠️ 如何開始掃描？
+第一步：硬體準備與雙燈號確認
+將燒錄好韌體的 STM32 開發板接上電源 (可接行動電源或電腦 USB)。
 
-### <b>Keywords</b>
+觀察 LED2 (PB14) 藍牙指示燈： * 若恆亮，代表藍牙正在廣播 (Advertising)，等待連線中。
 
-BLE, Peripheral, SPI, BlueNRG-M0, BlueNRG-MS
+若切換為閃爍模式，代表已被設備成功連線。
 
-### <b>Directory contents</b>
+觀察 PA5 掃描指示燈： * 開機預設為熄滅，代表目前處於「待機狀態 (Standby)」，不會傳送座標資料。
 
- - app_bluenrg_ms.c       SensorDemo_BLESensor-App initialization and applicative code
- 
- - gatt_db.c              Functions for building GATT DB and handling GATT events
- 
- - hci_tl_interface.c     Interface to the BlueNRG HCI Transport Layer 
- 
- - main.c                 Main program body
-  
- - sensor.c               Sensor init and state machine
- 
- - stm32**xx_hal_msp.c    Source code for MSP Initialization and de-Initialization
+⚠️ 【重要提醒】 > 確保手機沒有透過任何 App (如 nRF Connect) 連接著開發板，BLE 預設為一對一連線，若被手機佔用，電腦端將無法找到藍牙訊號！
 
- - stm32**xx_it.c         Source code for interrupt Service Routines
+第二步：啟動 Python 接收程式
+使用編輯器打開 ble_3d_scanner.py，確認 DEVICE_ADDRESS 變數已經更改為你手中開發板的 MAC 位址。
 
- - stm32**xx_nucleo.c     Source file for the BSP Common driver 
-						
- - stm32**xx_nucleo_bus.c Source file for the BSP BUS IO driver
- 
- - system_stm32**xx.c     CMSIS Cortex-Mx Device Peripheral Access Layer System Source File
+Python
+DEVICE_ADDRESS = "C2:D4:FE:69:B3:EB" # 請替換為實際的 MAC 位址
+打開終端機，執行我們的藍牙接收腳本：
 
- - target_platform.c      Get information on the target device memory
-  
-### <b>Hardware and Software environment</b>
+Bash
+python ble_3d_scanner.py
+程式會使用 MAC 位址進行強制連線 (可有效解決 Windows 藍牙名稱快取問題)。當終端機印出 ✅ 連線成功！正在開啟資料通道... 並且跳出 3D 畫布視窗時，代表準備就緒。
 
-  - This example runs on STM32 Nucleo boards with X-NUCLEO-IDB05A2 STM32 expansion board
-    (the X-NUCLEO-IDB05A1 expansion board can be also used)
-  - This example has been tested with STMicroelectronics:
-    - NUCLEO-L476RG RevC board
-    and can be easily tailored to any other supported device and development board.
+第三步：Action! 開始掃描
+拿起開發板，按下板子上的 藍色按鈕 (User Button)。
 
-ADDITIONAL_BOARD : X-NUCLEO-IDB05A2 https://www.st.com/en/ecosystems/x-nucleo-idb05a2.html
-ADDITIONAL_COMP : BlueNRG-M0 https://www.st.com/en/wireless-connectivity/bluenrg-m0.html
+看到板子上的 PA5 指示燈亮起 (綠燈)，代表開始記錄點雲並進行傳輸！
 
-### <b>How to use it?</b>
+像拿手電筒一樣揮動開發板，3D 視窗中就會即時浮現青色的點雲軌跡。
 
-In order to make the program work, you must do the following:
+掃描結束後，再按一次 藍色按鈕，PA5 綠燈熄滅，即停止記錄並進入待機，方便你移動至下一個掃描起點。
 
- - WARNING: before opening the project with any toolchain be sure your folder
-   installation path is not too in-depth since the toolchain may report errors
-   after building.
+⌨️ 3D 畫布操作指南 (快捷鍵)
+在 Python 的 3D 視窗中，除了可以使用滑鼠拖曳旋轉視角外，也提供了方便的鍵盤快捷鍵：
 
- - Open STM32CubeIDE (this firmware has been successfully tested with Version 1.17.0).
-   Alternatively you can use the Keil uVision toolchain (this firmware
-   has been successfully tested with V5.38.0) or the IAR toolchain (this firmware has 
-   been successfully tested with Embedded Workbench V9.20.1).
+按下 1：切換至 YZ 平面 (側視圖)
 
- - Rebuild all files and load your image into target memory.
+按下 2：切換至 XZ 平面 (正視圖)
 
- - Run the example.
+按下 3：切換至 XY 平面 (俯視圖)
 
- - Alternatively, you can download the pre-built binaries in "Binary" 
-   folder included in the distributed package.
+按下 0：恢復 預設 3D 立體視角
 
-### <b>Author</b>
-
-SRA Application Team
-
-### <b>License</b>
-
-Copyright (c) 2025 STMicroelectronics.
-All rights reserved.
-
-This software is licensed under terms that can be found in the LICENSE file
-in the root directory of this software component.
-If no LICENSE file comes with this software, it is provided AS-IS.
+⚠️ 開發與除錯注意事項 (給協作組員)
+關於 MAC 位址連線： 若更換了 STM32 開發板，請務必先使用 BLE 掃描工具 (或撰寫純掃描腳本) 找出新板子的 MAC 位址，並更新 ble_3d_scanner.py 中的 DEVICE_ADDRESS。
