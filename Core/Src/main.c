@@ -71,7 +71,7 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for ToF_Sensor_Task */
@@ -210,16 +210,15 @@ int main(void)
   MX_USB_OTG_FS_PCD_Init();
   MX_BlueNRG_MS_Init();
   /* USER CODE BEGIN 2 */
-  // === 新增：喚醒被 CubeMX 綁架的藍色按鍵與 LED ===
-  BSP_PB_Init(BUTTON_USER, BUTTON_MODE_EXTI); // 初始化按鍵與中斷
-  BSP_LED_Init(LED2);                         // 初始化 PB14 的 LED
-  // ===============================================
+    // === 修改：喚醒按鍵，但使用「純讀取模式」不要用中斷！ ===
+    BSP_PB_Init(BUTTON_USER, BUTTON_MODE_GPIO);
+    BSP_LED_Init(LED2);
+    // ===============================================
 
-  Add_Scanner_Service();
-  // === 新增：叫藍牙晶片開始對外大聲廣播 ===
-  Set_DeviceConnectable();
-  printf("[BLE] 廣播程序已啟動！等待連線...\r\n");
-  /* USER CODE END 2 */
+    Add_Scanner_Service();
+    Set_DeviceConnectable();
+    printf("[BLE] 廣播程序已啟動！等待連線...\r\n");
+    /* USER CODE END 2 */
 
   /* Init scheduler */
   osKernelInitialize();
@@ -739,13 +738,7 @@ extern void hci_notify_asynch_evt(void* pdata);
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  // 1. 直接在硬體中斷切換狀態，不等待任何感測器！(最暴力的直達車)
-  if (GPIO_Pin == GPIO_PIN_13)
-  {
-    is_scanning = !is_scanning;
-  }
-
-  // 2. 處理藍牙晶片 (PE6) 觸發的底層事件
+  // 🌟 刪除按鍵判斷，只處理藍牙晶片 (PE6) 觸發的底層事件
   if (GPIO_Pin == GPIO_PIN_6)
   {
     hci_notify_asynch_evt(NULL);
@@ -781,28 +774,30 @@ void Add_Scanner_Service(void)
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  char err_msg[64];
+  // 🌟 使用 static 變數，避免佔用 Stack 空間
+  static char dbg_msg[64];
+  static float point_data[3];
+
+  // 印出存活證明
+  int len = snprintf(dbg_msg, sizeof(dbg_msg), "\r\n[DEBUG] 藍牙任務 (DefaultTask) 啟動成功！\r\n");
+  HAL_UART_Transmit(&huart1, (uint8_t*)dbg_msg, len, 100);
 
   /* Infinite loop */
   for(;;)
   {
-    // === 新增：安全的 BLE 傳輸區塊 ===
     if (ble_send_ready) {
-        float point_data[3] = {ble_px, ble_py, ble_pz};
-        // 只有這個 Task 可以存取 SPI，絕對不會撞車！
+        point_data[0] = ble_px; point_data[1] = ble_py; point_data[2] = ble_pz;
         tBleStatus ret = aci_gatt_update_char_value(ScannerServHandle, PointCharHandle, 0, 12, (uint8_t*)point_data);
 
-        // 加入除錯機制：如果發送失敗，印出錯誤碼
         if (ret != BLE_STATUS_SUCCESS) {
-            int err_len = snprintf(err_msg, sizeof(err_msg), "[BLE Error] Code: 0x%02X\r\n", ret);
-            HAL_UART_Transmit(&huart1, (uint8_t*)err_msg, err_len, HAL_MAX_DELAY);
+            len = snprintf(dbg_msg, sizeof(dbg_msg), "[BLE Error] Code: 0x%02X\r\n", ret);
+            HAL_UART_Transmit(&huart1, (uint8_t*)dbg_msg, len, 100);
         }
-        ble_send_ready = 0; // 資料送出，放下旗標
+        ble_send_ready = 0;
     }
 
-    // 讓藍牙協定疊在背景持續運作
     MX_BlueNRG_MS_Process();
-    osDelay(10); // 稍微休息，避免佔用全部 CPU
+    osDelay(10);
   }
   /* USER CODE END 5 */
 }
@@ -815,8 +810,7 @@ void StartDefaultTask(void *argument)
 void StartTask02(void *argument)
 {
   /* USER CODE BEGIN StartTask02 */
-  // 🌟 貶為賤民：把不穩定的感測器降到最低權限
-  osThreadSetPriority(ToF_Sensor_TaskHandle, osPriorityLow);
+	osThreadSetPriority(ToF_Sensor_TaskHandle, osPriorityNormal);
 
   uint32_t filter_buf[FILTER_SIZE] = {0};
   uint8_t buf_idx = 0;
@@ -915,29 +909,40 @@ void StartTask03(void *argument)
 void StartTask04(void *argument)
 {
   /* USER CODE BEGIN StartTask04 */
-  // 🌟 破除飢餓：將按鈕與發送任務提升到「最高優先權」，保證絕對不被卡死！
   osThreadSetPriority(Telemetry_TaskHandle, osPriorityRealtime);
 
-  char uart_buf[128];
+  static char uart_buf[128];
   uint8_t last_state = 0;
+  uint8_t btn_prev = 0; // 記錄按鍵上一次的狀態
+  int len;
+
+  len = snprintf(uart_buf, sizeof(uart_buf), "\r\n[DEBUG] 通訊任務 (Task04) 啟動成功！\r\n");
+  HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
 
   for(;;)
   {
-    // --- 1. 即時狀態回饋 ---
+    // === 1. 暴力輪詢按鍵 (絕對不會當機) ===
+    uint8_t btn_now = BSP_PB_GetState(BUTTON_USER);
+    if (btn_now == 1 && btn_prev == 0) { // 偵測按下的那個瞬間
+        is_scanning = !is_scanning;
+    }
+    btn_prev = btn_now;
+
+    // === 2. 即時狀態回饋與真實 LED ===
     if (is_scanning != last_state) {
         if (is_scanning) {
-            printf("\r\n>>> 掃描開始 (綠燈) <<<\r\n");
-            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-            HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+            len = snprintf(uart_buf, sizeof(uart_buf), "\r\n>>> 掃描開始 (綠燈) <<<\r\n");
+            HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
+            BSP_LED_On(LED2); // 真正點亮板子上的綠燈
         } else {
-            printf("\r\n>>> 掃描停止 (紅燈) <<<\r\n");
-            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-            HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+            len = snprintf(uart_buf, sizeof(uart_buf), "\r\n>>> 掃描停止 (紅燈) <<<\r\n");
+            HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
+            BSP_LED_Off(LED2); // 熄滅綠燈
         }
         last_state = is_scanning;
     }
 
-    // --- 2. 資料打包發送 ---
+    // === 3. 資料打包發送 ===
     if (is_scanning) {
         float r = (float)global_display_dmm / 10.0f;
         float pitch_rad = global_pitch * (3.14159265f / 180.0f);
@@ -947,7 +952,7 @@ void StartTask04(void *argument)
         float py = -r * sinf(roll_rad);
         float pz = r * cosf(pitch_rad) * cosf(roll_rad);
 
-        int len = snprintf(uart_buf, sizeof(uart_buf), "%.1f,%.1f,%.1f\r\n", px, py, pz);
+        len = snprintf(uart_buf, sizeof(uart_buf), "%.1f,%.1f,%.1f\r\n", px, py, pz);
         HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
 
         ble_px = px; ble_py = py; ble_pz = pz;
