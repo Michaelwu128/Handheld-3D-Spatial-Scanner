@@ -930,17 +930,21 @@ void StartTask04(void *argument)
 
     // === 2. 即時狀態回饋與真實 LED ===
     if (is_scanning != last_state) {
-        if (is_scanning) {
-            len = snprintf(uart_buf, sizeof(uart_buf), "\r\n>>> 掃描開始 (綠燈) <<<\r\n");
-            HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
-            BSP_LED_On(LED2); // 真正點亮板子上的綠燈
-        } else {
-            len = snprintf(uart_buf, sizeof(uart_buf), "\r\n>>> 掃描停止 (紅燈) <<<\r\n");
-            HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
-            BSP_LED_Off(LED2); // 熄滅綠燈
+            if (is_scanning) {
+                len = snprintf(uart_buf, sizeof(uart_buf), "\r\n>>> 掃描開始 (綠燈) <<<\r\n");
+                HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
+
+                // 🌟 拔除 BSP_LED_On，改回你原本寫的 PA5！
+                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+            } else {
+                len = snprintf(uart_buf, sizeof(uart_buf), "\r\n>>> 掃描停止 (紅燈) <<<\r\n");
+                HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
+
+                // 🌟 拔除 BSP_LED_Off，改回你原本寫的 PA5！
+                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+            }
+            last_state = is_scanning;
         }
-        last_state = is_scanning;
-    }
 
     // === 3. 資料打包發送 ===
     if (is_scanning) {
