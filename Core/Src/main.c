@@ -19,15 +19,24 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
+#include "app_bluenrg_ms.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "stm32l475e_iot01.h"
+#include "b_l475e_iot01a1.h"   // <--- 換成新的 BSP 標頭檔
 #include "vl53l0x_def.h"
 #include "vl53l0x_api.h"
 #include <stdio.h>
 #include <stdlib.h> // <--- 補上這行給 abs() 使用
 #include <math.h>   // <--- 新增這行：供姿態運算使用
+
+// === 修改：BLE 相關標頭檔 (補上 bluenrg_def.h 與 bluenrg_gap.h) ===
+#include "bluenrg_def.h"
+#include "hci.h"
+#include "bluenrg_gap.h"
+#include "bluenrg_gatt_aci.h"
+#include "bluenrg_gap_aci.h"
+#include "sensor.h"  // <--- 新增這行：讓系統認識 setConnectable() 函式
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -54,9 +63,6 @@ I2C_HandleTypeDef hi2c2;
 
 QSPI_HandleTypeDef hqspi;
 
-SPI_HandleTypeDef hspi3;
-
-UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart3;
 
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
@@ -136,6 +142,12 @@ volatile float global_pitch = 0.0f;
 
 // === 新增：掃描狀態旗標 ===
 volatile uint8_t is_scanning = 0; // 0: 待機 (Standby), 1: 掃描中 (Scanning)
+// === 新增：BLE 點雲傳輸 Handles ===
+uint16_t ScannerServHandle;
+uint16_t PointCharHandle;
+// === 新增：BLE 執行緒安全傳輸旗標 ===
+volatile uint8_t ble_send_ready = 0;
+volatile float ble_px = 0, ble_py = 0, ble_pz = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -144,8 +156,6 @@ static void MX_GPIO_Init(void);
 static void MX_DFSDM1_Init(void);
 static void MX_I2C2_Init(void);
 static void MX_QUADSPI_Init(void);
-static void MX_SPI3_Init(void);
-static void MX_USART1_UART_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_USB_OTG_FS_PCD_Init(void);
 void StartDefaultTask(void *argument);
@@ -156,6 +166,7 @@ void StartIMUTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 void StartIMUTask(void *argument);
+void Add_Scanner_Service(void); // <--- 新增這行
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -195,12 +206,19 @@ int main(void)
   MX_DFSDM1_Init();
   MX_I2C2_Init();
   MX_QUADSPI_Init();
-  MX_SPI3_Init();
-  MX_USART1_UART_Init();
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
+  MX_BlueNRG_MS_Init();
   /* USER CODE BEGIN 2 */
+  // === 新增：喚醒被 CubeMX 綁架的藍色按鍵與 LED ===
+  BSP_PB_Init(BUTTON_USER, BUTTON_MODE_EXTI); // 初始化按鍵與中斷
+  BSP_LED_Init(LED2);                         // 初始化 PB14 的 LED
+  // ===============================================
 
+  Add_Scanner_Service();
+  // === 新增：叫藍牙晶片開始對外大聲廣播 ===
+  Set_DeviceConnectable();
+  printf("[BLE] 廣播程序已啟動！等待連線...\r\n");
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -455,81 +473,6 @@ static void MX_QUADSPI_Init(void)
 }
 
 /**
-  * @brief SPI3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI3_Init(void)
-{
-
-  /* USER CODE BEGIN SPI3_Init 0 */
-
-  /* USER CODE END SPI3_Init 0 */
-
-  /* USER CODE BEGIN SPI3_Init 1 */
-
-  /* USER CODE END SPI3_Init 1 */
-  /* SPI3 parameter configuration*/
-  hspi3.Instance = SPI3;
-  hspi3.Init.Mode = SPI_MODE_MASTER;
-  hspi3.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi3.Init.DataSize = SPI_DATASIZE_4BIT;
-  hspi3.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi3.Init.NSS = SPI_NSS_SOFT;
-  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
-  hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi3.Init.CRCPolynomial = 7;
-  hspi3.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
-  hspi3.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  if (HAL_SPI_Init(&hspi3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI3_Init 2 */
-
-  /* USER CODE END SPI3_Init 2 */
-
-}
-
-/**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART1_Init 0 */
-
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART1_Init 2 */
-
-  /* USER CODE END USART1_Init 2 */
-
-}
-
-/**
   * @brief USART3 Initialization Function
   * @param None
   * @retval None
@@ -625,8 +568,8 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOA, ARD_D10_Pin|GPIO_PIN_5|SPBTLE_RF_RST_Pin|ARD_D9_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, ARD_D8_Pin|ISM43362_BOOT0_Pin|ISM43362_WAKEUP_Pin|GPIO_PIN_14
-                          |SPSGRF_915_SDN_Pin|ARD_D5_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, ARD_D8_Pin|ISM43362_BOOT0_Pin|ISM43362_WAKEUP_Pin|SPSGRF_915_SDN_Pin
+                          |ARD_D5_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, USB_OTG_FS_PWR_EN_Pin|PMOD_RESET_Pin|STSAFE_A100_RESET_Pin, GPIO_PIN_RESET);
@@ -655,12 +598,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PC13 VL53L0X_GPIO1_EXTI7_Pin LSM3MDL_DRDY_EXTI8_Pin */
-  GPIO_InitStruct.Pin = GPIO_PIN_13|VL53L0X_GPIO1_EXTI7_Pin|LSM3MDL_DRDY_EXTI8_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : ARD_A5_Pin ARD_A4_Pin ARD_A3_Pin ARD_A2_Pin
                            ARD_A1_Pin ARD_A0_Pin */
@@ -719,10 +656,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(ARD_D6_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : ARD_D8_Pin ISM43362_BOOT0_Pin ISM43362_WAKEUP_Pin PB14
-                           SPSGRF_915_SDN_Pin ARD_D5_Pin SPSGRF_915_SPI3_CSN_Pin */
-  GPIO_InitStruct.Pin = ARD_D8_Pin|ISM43362_BOOT0_Pin|ISM43362_WAKEUP_Pin|GPIO_PIN_14
-                          |SPSGRF_915_SDN_Pin|ARD_D5_Pin|SPSGRF_915_SPI3_CSN_Pin;
+  /*Configure GPIO pins : ARD_D8_Pin ISM43362_BOOT0_Pin ISM43362_WAKEUP_Pin SPSGRF_915_SDN_Pin
+                           ARD_D5_Pin SPSGRF_915_SPI3_CSN_Pin */
+  GPIO_InitStruct.Pin = ARD_D8_Pin|ISM43362_BOOT0_Pin|ISM43362_WAKEUP_Pin|SPSGRF_915_SDN_Pin
+                          |ARD_D5_Pin|SPSGRF_915_SPI3_CSN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -748,6 +685,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : VL53L0X_GPIO1_EXTI7_Pin LSM3MDL_DRDY_EXTI8_Pin */
+  GPIO_InitStruct.Pin = VL53L0X_GPIO1_EXTI7_Pin|LSM3MDL_DRDY_EXTI8_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PMOD_SPI2_SCK_Pin */
@@ -792,14 +735,39 @@ static void MX_GPIO_Init(void)
   * @param  GPIO_Pin Specifies the pins connected EXTI line
   * @retval None
   */
+extern void hci_notify_asynch_evt(void* pdata);
+
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  // 確認是 Blue Button (PC13) 觸發的中斷
+  // 1. 直接在硬體中斷切換狀態，不等待任何感測器！(最暴力的直達車)
   if (GPIO_Pin == GPIO_PIN_13)
   {
-    // 在中斷內釋放 Semaphore (CMSIS-OS v2 支援在 ISR 呼叫此 API)
-    osSemaphoreRelease(myBinarySem01Handle);
+    is_scanning = !is_scanning;
   }
+
+  // 2. 處理藍牙晶片 (PE6) 觸發的底層事件
+  if (GPIO_Pin == GPIO_PIN_6)
+  {
+    hci_notify_asynch_evt(NULL);
+  }
+}
+void Add_Scanner_Service(void)
+{
+    tBleStatus ret;
+
+    // 1. 建立 Custom Service (使用隨機生成的 128-bit UUID)
+    // UUID: d973f2e0-b19e-11e2-9e96-0800200c9a66
+    uint8_t service_uuid[16] = {0x66,0x9a,0x0c,0x20,0x00,0x08,0x96,0x9e,0xe2,0x11,0x9e,0xb1,0xe0,0xf2,0x73,0xd9};
+    ret = aci_gatt_add_serv(UUID_TYPE_128, service_uuid, PRIMARY_SERVICE, 7, &ScannerServHandle);
+
+    if (ret == BLE_STATUS_SUCCESS) {
+        // 2. 建立 Characteristic (容量為 12 Bytes，具備 Notify 屬性)
+        // UUID: d973f2e1-b19e-11e2-9e96-0800200c9a66
+        uint8_t char_uuid[16] = {0x66,0x9a,0x0c,0x20,0x00,0x08,0x96,0x9e,0xe2,0x11,0x9e,0xb1,0xe1,0xf2,0x73,0xd9};
+        aci_gatt_add_char(ScannerServHandle, UUID_TYPE_128, char_uuid, 12,
+                          CHAR_PROP_NOTIFY, ATTR_PERMISSION_NONE,
+                          0, 16, 0, &PointCharHandle);
+    }
 }
 /* USER CODE END 4 */
 
@@ -813,20 +781,32 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
+  char err_msg[64];
+
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    // === 新增：安全的 BLE 傳輸區塊 ===
+    if (ble_send_ready) {
+        float point_data[3] = {ble_px, ble_py, ble_pz};
+        // 只有這個 Task 可以存取 SPI，絕對不會撞車！
+        tBleStatus ret = aci_gatt_update_char_value(ScannerServHandle, PointCharHandle, 0, 12, (uint8_t*)point_data);
+
+        // 加入除錯機制：如果發送失敗，印出錯誤碼
+        if (ret != BLE_STATUS_SUCCESS) {
+            int err_len = snprintf(err_msg, sizeof(err_msg), "[BLE Error] Code: 0x%02X\r\n", ret);
+            HAL_UART_Transmit(&huart1, (uint8_t*)err_msg, err_len, HAL_MAX_DELAY);
+        }
+        ble_send_ready = 0; // 資料送出，放下旗標
+    }
+
+    // 讓藍牙協定疊在背景持續運作
+    MX_BlueNRG_MS_Process();
+    osDelay(10); // 稍微休息，避免佔用全部 CPU
   }
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_StartTask02 */
-/**
-* @brief Function implementing the ToF_Sensor_Task thread.
-* @param argument: Not used
-* @retval None
-*/
 /* USER CODE BEGIN Header_StartTask02 */
 /**
 * @brief Function implementing the ToF_Sensor_Task thread.
@@ -835,64 +815,62 @@ void StartDefaultTask(void *argument)
 void StartTask02(void *argument)
 {
   /* USER CODE BEGIN StartTask02 */
+  // 🌟 貶為賤民：把不穩定的感測器降到最低權限
+  osThreadSetPriority(ToF_Sensor_TaskHandle, osPriorityLow);
+
   uint32_t filter_buf[FILTER_SIZE] = {0};
   uint8_t buf_idx = 0;
   uint32_t sum = 0;
   VL53L0X_RangingMeasurementData_t RangingData;
 
-  char msg[64];
-  int len;
-
-  uint32_t refSpadCount;
-  uint8_t isApertureSpads;
-  uint8_t VhvSettings;
-  uint8_t PhaseCal;
-
-  HAL_GPIO_WritePin(GPIOC, VL53L0X_XSHUT_Pin, GPIO_PIN_SET);
+  // 延長物理重置時間
+  HAL_GPIO_WritePin(GPIOC, VL53L0X_XSHUT_Pin, GPIO_PIN_RESET);
   osDelay(50);
+  HAL_GPIO_WritePin(GPIOC, VL53L0X_XSHUT_Pin, GPIO_PIN_SET);
+  osDelay(200);
 
   Dev.I2cHandle = &hi2c2;
   Dev.I2cDevAddr = 0x52;
 
-  // --- 初始化階段 (使用 Mutex 保護) ---
-  osMutexAcquire(i2c2MutexHandle, osWaitForever); // 取得 I2C2 控制權
+  if (HAL_I2C_IsDeviceReady(&hi2c2, Dev.I2cDevAddr, 2, 100) != HAL_OK) {
+      printf("\r\n[ToF Error] Sensor dead! Suspending task...\r\n");
+      osThreadSuspend(ToF_Sensor_TaskHandle);
+  }
 
-  VL53L0X_WaitDeviceBooted(&Dev);
-  VL53L0X_DataInit(&Dev);
-  VL53L0X_StaticInit(&Dev);
-  VL53L0X_PerformRefSpadManagement(&Dev, &refSpadCount, &isApertureSpads);
-  VL53L0X_PerformRefCalibration(&Dev, &VhvSettings, &PhaseCal);
-  VL53L0X_SetDeviceMode(&Dev, VL53L0X_DEVICEMODE_SINGLE_RANGING);
-  VL53L0X_SetMeasurementTimingBudgetMicroSeconds(&Dev, 33000);
+  // 加上 1 秒的 Mutex 超時限制
+  if (osMutexAcquire(i2c2MutexHandle, 1000) == osOK) {
+      VL53L0X_WaitDeviceBooted(&Dev);
+      VL53L0X_DataInit(&Dev);
+      VL53L0X_StaticInit(&Dev);
+      uint32_t refSpadCount;
+      uint8_t isApertureSpads, VhvSettings, PhaseCal;
+      VL53L0X_PerformRefSpadManagement(&Dev, &refSpadCount, &isApertureSpads);
+      VL53L0X_PerformRefCalibration(&Dev, &VhvSettings, &PhaseCal);
+      VL53L0X_SetDeviceMode(&Dev, VL53L0X_DEVICEMODE_SINGLE_RANGING);
+      VL53L0X_SetMeasurementTimingBudgetMicroSeconds(&Dev, 33000);
+      osMutexRelease(i2c2MutexHandle);
+      printf("\r\n[ToF] Init Complete. Starting Loop...\r\n");
+  } else {
+      printf("\r\n[ToF Error] Mutex Timeout! Suspending task...\r\n");
+      osThreadSuspend(ToF_Sensor_TaskHandle);
+  }
 
-  osMutexRelease(i2c2MutexHandle); // 釋放 I2C2 控制權
-  // ------------------------------------
-
-  len = snprintf(msg, sizeof(msg), "[ToF] Init Complete. Starting Loop...\r\n");
-  HAL_UART_Transmit(&huart1, (uint8_t*)msg, len, 100);
-
-  /* Infinite loop */
   for(;;)
   {
-    // --- 測量階段 (使用 Mutex 保護) ---
-    osMutexAcquire(i2c2MutexHandle, osWaitForever); // 取得控制權
-    VL53L0X_PerformSingleRangingMeasurement(&Dev, &RangingData);
-    osMutexRelease(i2c2MutexHandle); // 釋放控制權
-    // ------------------------------------
+    if (osMutexAcquire(i2c2MutexHandle, 50) == osOK) {
+        VL53L0X_PerformSingleRangingMeasurement(&Dev, &RangingData);
+        osMutexRelease(i2c2MutexHandle);
 
-    if(RangingData.RangeMilliMeter > 0 && RangingData.RangeMilliMeter < 8000)
-    {
-       uint32_t current_dmm = MM_TO_DMM(RangingData.RangeMilliMeter);
-
-       sum -= filter_buf[buf_idx];
-       filter_buf[buf_idx] = current_dmm;
-       sum += filter_buf[buf_idx];
-       buf_idx = (buf_idx + 1) % FILTER_SIZE;
-
-       uint32_t stable_dist = sum / FILTER_SIZE;
-       osMessageQueuePut(distQueueHandle, &stable_dist, 0, 10);
+        if(RangingData.RangeMilliMeter > 0 && RangingData.RangeMilliMeter < 8000) {
+           uint32_t current_dmm = MM_TO_DMM(RangingData.RangeMilliMeter);
+           sum -= filter_buf[buf_idx];
+           filter_buf[buf_idx] = current_dmm;
+           sum += filter_buf[buf_idx];
+           buf_idx = (buf_idx + 1) % FILTER_SIZE;
+           uint32_t stable_dist = sum / FILTER_SIZE;
+           osMessageQueuePut(distQueueHandle, &stable_dist, 0, 10);
+        }
     }
-
     osDelay(20);
   }
   /* USER CODE END StartTask02 */
@@ -908,42 +886,22 @@ void StartTask03(void *argument)
   /* USER CODE BEGIN StartTask03 */
   uint32_t d_now = 0;
   uint32_t d_base = 0;
-  uint32_t d_display = 0;
+  uint8_t last_scan_state = 0;
 
-  /* Infinite loop */
   for(;;)
   {
-    // 從 Queue 接收感測器資料 (Block 等待)
+    // 如果 ToF 當機，這裡會安全地 Block 住，不消耗任何 CPU
     if (osMessageQueueGet(distQueueHandle, &d_now, NULL, osWaitForever) == osOK)
     {
-      // --- 1. 偵測藍色按鍵 (User Button) 觸發 ---
-      // osSemaphoreAcquire 設為 0 代表「不等待，有信號就拿，沒信號就略過」
-      if (osSemaphoreAcquire(myBinarySem01Handle, 0) == osOK) {
-        is_scanning = !is_scanning; // 切換狀態：0變1, 1變0
-
-        if (is_scanning == 1) {
-            // 第一次按下：開始掃描，執行 Auto-Tare (將當下距離設為 0 原點)
-            d_base = d_now;
-        }
+      // 偵測掃描狀態的「瞬間開啟」，執行 Auto-Tare 原點歸零
+      if (is_scanning == 1 && last_scan_state == 0) {
+          d_base = d_now;
       }
+      last_scan_state = is_scanning;
 
-      // 2. 距離運算 (以 d_base 為基準點)
-      d_display = (d_now >= d_base) ? (d_now - d_base) : (d_base - d_now);
-      global_display_dmm = d_display;
+      global_display_dmm = (d_now >= d_base) ? (d_now - d_base) : (d_base - d_now);
 
-      // --- 3. LED 狀態指示 ---
-      // 先把所有指示燈關閉
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET); // 綠燈
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET); // 紅燈
-      HAL_GPIO_WritePin(GPIOC, LED3_WIFI__LED4_BLE_Pin, GPIO_PIN_RESET); // 藍燈
-
-      if (is_scanning) {
-          // 狀態 [掃描中]：亮綠燈，代表正在記錄數據
-          HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-      } else {
-          // 狀態 [待機中]：亮紅燈，代表停止記錄
-          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
-      }
+      // 註：實體 LED 切換已移交給 StartTask04 處理
     }
   }
   /* USER CODE END StartTask03 */
@@ -957,12 +915,29 @@ void StartTask03(void *argument)
 void StartTask04(void *argument)
 {
   /* USER CODE BEGIN StartTask04 */
-  char uart_buf[128];
+  // 🌟 破除飢餓：將按鈕與發送任務提升到「最高優先權」，保證絕對不被卡死！
+  osThreadSetPriority(Telemetry_TaskHandle, osPriorityRealtime);
 
-  /* Infinite loop */
+  char uart_buf[128];
+  uint8_t last_state = 0;
+
   for(;;)
   {
-    // --- 加上閘門：只有在掃描狀態才計算並輸出 ---
+    // --- 1. 即時狀態回饋 ---
+    if (is_scanning != last_state) {
+        if (is_scanning) {
+            printf("\r\n>>> 掃描開始 (綠燈) <<<\r\n");
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+        } else {
+            printf("\r\n>>> 掃描停止 (紅燈) <<<\r\n");
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+        }
+        last_state = is_scanning;
+    }
+
+    // --- 2. 資料打包發送 ---
     if (is_scanning) {
         float r = (float)global_display_dmm / 10.0f;
         float pitch_rad = global_pitch * (3.14159265f / 180.0f);
@@ -972,14 +947,12 @@ void StartTask04(void *argument)
         float py = -r * sinf(roll_rad);
         float pz = r * cosf(pitch_rad) * cosf(roll_rad);
 
-        int len = snprintf(uart_buf, sizeof(uart_buf),
-                           "%.1f,%.1f,%.1f\r\n",
-                           px, py, pz);
+        int len = snprintf(uart_buf, sizeof(uart_buf), "%.1f,%.1f,%.1f\r\n", px, py, pz);
+        HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
 
-        HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, HAL_MAX_DELAY);
+        ble_px = px; ble_py = py; ble_pz = pz;
+        ble_send_ready = 1;
     }
-
-    // 無論有沒有在掃描，都要延遲，維持系統排程穩定 (10Hz)
     osDelay(100);
   }
   /* USER CODE END StartTask04 */
@@ -988,8 +961,6 @@ void StartTask04(void *argument)
 /* USER CODE BEGIN Header_StartIMUTask */
 /**
 * @brief Function implementing the IMU_Task thread.
-* @param argument: Not used
-* @retval None
 */
 /* USER CODE END Header_StartIMUTask */
 void StartIMUTask(void *argument)
@@ -999,60 +970,42 @@ void StartIMUTask(void *argument)
   uint8_t ctrl[2];
   uint8_t raw_data[12];
 
-  // --- 1. IMU 初始化階段 (使用 Mutex 保護) ---
-  osDelay(100); // 等待感測器穩定
-  osMutexAcquire(i2c2MutexHandle, osWaitForever);
-
-  // 檢查 WHO_AM_I (LSM6DSL 應回傳 0x6A)
-  HAL_I2C_Mem_Read(&hi2c2, LSM6DSL_ADDR, LSM6DSL_WHO_AM_I, 1, &whoAmI, 1, 100);
-
-  if (whoAmI == 0x6A) {
-      // 啟動加速度計 (CTRL1_XL): 104Hz, +/- 2g
-      ctrl[0] = 0x40;
-      HAL_I2C_Mem_Write(&hi2c2, LSM6DSL_ADDR, LSM6DSL_CTRL1_XL, 1, &ctrl[0], 1, 100);
-
-      // 啟動陀螺儀 (CTRL2_G): 104Hz, 2000 dps
-      ctrl[1] = 0x4C;
-      HAL_I2C_Mem_Write(&hi2c2, LSM6DSL_ADDR, LSM6DSL_CTRL2_G, 1, &ctrl[1], 1, 100);
+  osDelay(100);
+  // 🌟 破除死結：不無限死等，最多等 100ms
+  if (osMutexAcquire(i2c2MutexHandle, 100) == osOK) {
+      HAL_I2C_Mem_Read(&hi2c2, LSM6DSL_ADDR, LSM6DSL_WHO_AM_I, 1, &whoAmI, 1, 100);
+      if (whoAmI == 0x6A) {
+          ctrl[0] = 0x40;
+          HAL_I2C_Mem_Write(&hi2c2, LSM6DSL_ADDR, LSM6DSL_CTRL1_XL, 1, &ctrl[0], 1, 100);
+          ctrl[1] = 0x4C;
+          HAL_I2C_Mem_Write(&hi2c2, LSM6DSL_ADDR, LSM6DSL_CTRL2_G, 1, &ctrl[1], 1, 100);
+      }
+      osMutexRelease(i2c2MutexHandle);
   }
 
-  osMutexRelease(i2c2MutexHandle);
-  // ---------------------------------------------
-
-  /* Infinite loop */
   for(;;)
   {
     if (whoAmI == 0x6A) {
-        // --- 2. 測量階段 (使用 Mutex 保護) ---
-        osMutexAcquire(i2c2MutexHandle, osWaitForever);
-        // LSM6DSL 支援自動遞增地址，從 OUTX_L_G (0x22) 連續讀取 12 Bytes
-        HAL_I2C_Mem_Read(&hi2c2, LSM6DSL_ADDR, LSM6DSL_OUTX_L_G, 1, raw_data, 12, 100);
-        osMutexRelease(i2c2MutexHandle);
+        if (osMutexAcquire(i2c2MutexHandle, 50) == osOK) {
+            HAL_I2C_Mem_Read(&hi2c2, LSM6DSL_ADDR, LSM6DSL_OUTX_L_G, 1, raw_data, 12, 100);
+            osMutexRelease(i2c2MutexHandle);
 
-        // --- 3. 解析數據 (Little Endian 轉換) ---
-        // 前 6 Bytes 是陀螺儀 (Gyro)，後 6 Bytes 是加速度計 (Accel)
-        global_imu_data.gx = (int16_t)((raw_data[1] << 8) | raw_data[0]);
-        global_imu_data.gy = (int16_t)((raw_data[3] << 8) | raw_data[2]);
-        global_imu_data.gz = (int16_t)((raw_data[5] << 8) | raw_data[4]);
+            global_imu_data.gx = (int16_t)((raw_data[1] << 8) | raw_data[0]);
+            global_imu_data.gy = (int16_t)((raw_data[3] << 8) | raw_data[2]);
+            global_imu_data.gz = (int16_t)((raw_data[5] << 8) | raw_data[4]);
+            global_imu_data.ax = (int16_t)((raw_data[7] << 8) | raw_data[6]);
+            global_imu_data.ay = (int16_t)((raw_data[9] << 8) | raw_data[8]);
+            global_imu_data.az = (int16_t)((raw_data[11] << 8) | raw_data[10]);
 
-        global_imu_data.ax = (int16_t)((raw_data[7] << 8) | raw_data[6]);
-        global_imu_data.ay = (int16_t)((raw_data[9] << 8) | raw_data[8]);
-        global_imu_data.az = (int16_t)((raw_data[11] << 8) | raw_data[10]);
-        // --- 4. 姿態角運算 (AHRS) ---
-		// 1. 將 Raw Data 轉換為實際的 g 值 (除以 16384.0)
-		float ax_g = (float)global_imu_data.ax / 16384.0f;
-		float ay_g = (float)global_imu_data.ay / 16384.0f;
-		float az_g = (float)global_imu_data.az / 16384.0f;
+            float ax_g = (float)global_imu_data.ax / 16384.0f;
+            float ay_g = (float)global_imu_data.ay / 16384.0f;
+            float az_g = (float)global_imu_data.az / 16384.0f;
 
-		// 2. 利用 atan2 計算 Roll 與 Pitch，並將弧度 (Radian) 轉為角度 (Degree)
-		// Roll: 繞 X 軸旋轉的角度
-		global_roll = atan2f(ay_g, az_g) * (180.0f / 3.14159265f);
-
-		// Pitch: 繞 Y 軸旋轉的角度
-		global_pitch = atan2f(-ax_g, sqrtf(ay_g * ay_g + az_g * az_g)) * (180.0f / 3.14159265f);
+            global_roll = atan2f(ay_g, az_g) * (180.0f / 3.14159265f);
+            global_pitch = atan2f(-ax_g, sqrtf(ay_g * ay_g + az_g * az_g)) * (180.0f / 3.14159265f);
+        }
     }
-
-    osDelay(20); // 50Hz 更新頻率
+    osDelay(20);
   }
   /* USER CODE END StartIMUTask */
 }

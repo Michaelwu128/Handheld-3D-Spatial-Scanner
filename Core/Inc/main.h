@@ -29,6 +29,8 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 #include "stm32l4xx_hal.h"
 
+#include "hci_tl_interface.h"
+#include "b_l475e_iot01a1.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -69,6 +71,7 @@ void Error_Handler(void);
 #define SPBTLE_RF_IRQ_EXTI6_Pin GPIO_PIN_6
 #define SPBTLE_RF_IRQ_EXTI6_GPIO_Port GPIOE
 #define SPBTLE_RF_IRQ_EXTI6_EXTI_IRQn EXTI9_5_IRQn
+#define BSP_BUTTON_EXTI_IRQn EXTI15_10_IRQn
 #define ARD_A5_Pin GPIO_PIN_0
 #define ARD_A5_GPIO_Port GPIOC
 #define ARD_A4_Pin GPIO_PIN_1
