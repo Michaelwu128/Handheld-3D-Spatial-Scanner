@@ -9,8 +9,8 @@ Release/
 # 2. 忽略 IDE 個人工作區與設定檔 (會因電腦而異，極易衝突)
 .metadata/
 .settings/
-.cproject
-.project
+#.cproject
+#.project
 *.launch
 
 # 3. 忽略編譯過程中產生的中介檔與執行檔
