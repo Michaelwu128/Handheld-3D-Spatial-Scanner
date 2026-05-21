@@ -218,7 +218,7 @@ int main(void)
     Add_Scanner_Service();
     Set_DeviceConnectable();
     printf("[BLE] 廣播程序已啟動！等待連線...\r\n");
-    /* USER CODE END 2 */
+  /* USER CODE END 2 */
 
   /* Init scheduler */
   osKernelInitialize();

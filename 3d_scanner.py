@@ -6,7 +6,7 @@ import numpy as np
 # ==========================================
 # 1. 設定區 (請修改為你的 COM Port)
 # ==========================================
-SERIAL_PORT = 'COM4'  # 請確認這是你目前的 COM Port
+SERIAL_PORT = 'COM5'  # 請確認這是你目前的 COM Port
 BAUD_RATE = 115200
 MAX_POINTS = 500      
 
