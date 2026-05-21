@@ -9,6 +9,7 @@ from bleak import BleakClient
 # 1. 設定區
 # =======================================================
 DEVICE_ADDRESS = "C2:D4:FE:69:B3:EB" 
+#DEVICE_ADDRESS = "FF:6B:06:B4:46:D5"
 CHARACTERISTIC_UUID = "d973f2e1-b19e-11e2-9e96-0800200c9a66" 
 MAX_POINTS = 500  # 🌟 恢復數量上限，防止系統卡頓
 
