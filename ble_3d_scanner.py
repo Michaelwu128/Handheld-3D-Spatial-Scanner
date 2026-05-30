@@ -1,6 +1,7 @@
 import asyncio
 import struct
 import threading
+from collections import deque
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from bleak import BleakClient
@@ -8,12 +9,18 @@ from bleak import BleakClient
 # =======================================================
 # 1. 設定區
 # =======================================================
-DEVICE_ADDRESS = "C2:D4:FE:69:B3:EB" 
+DEVICE_ADDRESS = "C2:D4:FE:69:B3:EB"
 #DEVICE_ADDRESS = "FF:6B:06:B4:46:D5"
-CHARACTERISTIC_UUID = "d973f2e1-b19e-11e2-9e96-0800200c9a66" 
-MAX_POINTS = 500  # 🌟 恢復數量上限，防止系統卡頓
+CHARACTERISTIC_UUID = "d973f2e1-b19e-11e2-9e96-0800200c9a66"
+MAX_POINTS = 500
 
-x_data, y_data, z_data = [], [], []
+# 使用 deque(maxlen) 取代 list：超過上限自動丟最舊的點，且 O(1) append
+x_data = deque(maxlen=MAX_POINTS)
+y_data = deque(maxlen=MAX_POINTS)
+z_data = deque(maxlen=MAX_POINTS)
+
+# 保護共用資料：BLE 執行緒（asyncio）與 Matplotlib 主執行緒會同時存取
+data_lock = threading.Lock()
 
 # =======================================================
 # 2. 藍牙接收與解碼
@@ -21,17 +28,12 @@ x_data, y_data, z_data = [], [], []
 def notification_handler(sender, data):
     if len(data) == 12:
         x, y, z = struct.unpack('<fff', data)
+        # 移除每點 print：在 10~20Hz 下 print() 的 I/O 會拖慢 asyncio event loop
         print(f"接收座標: X={x:7.1f}, Y={y:7.1f}, Z={z:7.1f}")
-        
-        x_data.append(x)
-        y_data.append(y)
-        z_data.append(z)
-        
-        # 🌟 限制最大點數，維持渲染流暢度
-        if len(x_data) > MAX_POINTS:
-            x_data.pop(0)
-            y_data.pop(0)
-            z_data.pop(0)
+        with data_lock:
+            x_data.append(x)
+            y_data.append(y)
+            z_data.append(z)
 
 async def run_ble():
     print(f"🔗 準備使用 MAC 位址 [{DEVICE_ADDRESS}] 強制連線...")
@@ -89,11 +91,15 @@ fig.canvas.mpl_connect('key_press_event', on_key_press)
 # 4. 高效畫面更新 (只換資料，不重繪座標軸)
 # =======================================================
 def update_plot(frame):
-    # 🌟 直接替換底層資料，速度極快
-    scatter._offsets3d = (x_data, y_data, z_data)
+    # 在 data_lock 保護下複製一份快照，避免渲染到一半資料被 BLE 執行緒更改
+    with data_lock:
+        xs = list(x_data)
+        ys = list(y_data)
+        zs = list(z_data)
+    scatter._offsets3d = (xs, ys, zs)
     return scatter,
 
-# interval=30 搭配 blit=False 維持高效刷新
+# interval=50ms (20Hz 渲染) 對應嵌入式端的 20Hz 生產速率
 ani = FuncAnimation(fig, update_plot, interval=50, cache_frame_data=False, blit=False)
 
 try:

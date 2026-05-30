@@ -142,12 +142,17 @@ volatile float global_pitch = 0.0f;
 
 // === 新增：掃描狀態旗標 ===
 volatile uint8_t is_scanning = 0; // 0: 待機 (Standby), 1: 掃描中 (Scanning)
-// === 新增：BLE 點雲傳輸 Handles ===
+// === BLE 點雲傳輸 Handles ===
 uint16_t ScannerServHandle;
 uint16_t PointCharHandle;
-// === 新增：BLE 執行緒安全傳輸旗標 ===
-volatile uint8_t ble_send_ready = 0;
-volatile float ble_px = 0, ble_py = 0, ble_pz = 0;
+
+// === BLE 點資料結構（取代 ble_send_ready 旗標，用佇列傳遞）===
+typedef struct {
+    float px, py, pz;
+} BlePoint_t;
+
+// 深度為 1 的覆寫佇列：永遠只保留最新的點
+osMessageQueueId_t blePointQueueHandle;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -247,6 +252,8 @@ int main(void)
   /* USER CODE BEGIN RTOS_QUEUES */
   // 建立一個可以容納 10 個 uint32_t 的 Queue
   distQueueHandle = osMessageQueueNew(10, sizeof(uint32_t), NULL);
+  // 建立深度 1 的 BLE 點資料佇列（Fire-and-Forget 覆寫語意）
+  blePointQueueHandle = osMessageQueueNew(1, sizeof(BlePoint_t), NULL);
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -774,30 +781,38 @@ void Add_Scanner_Service(void)
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  // 🌟 使用 static 變數，避免佔用 Stack 空間
   static char dbg_msg[64];
-  static float point_data[3];
+  BlePoint_t point;
+  float point_data[3];
 
-  // 印出存活證明
-  int len = snprintf(dbg_msg, sizeof(dbg_msg), "\r\n[DEBUG] 藍牙任務 (DefaultTask) 啟動成功！\r\n");
+  int len = snprintf(dbg_msg, sizeof(dbg_msg), "\r\n[BLE Task] 啟動！\r\n");
   HAL_UART_Transmit(&huart1, (uint8_t*)dbg_msg, len, 100);
 
   /* Infinite loop */
   for(;;)
   {
-    if (ble_send_ready) {
-        point_data[0] = ble_px; point_data[1] = ble_py; point_data[2] = ble_pz;
-        tBleStatus ret = aci_gatt_update_char_value(ScannerServHandle, PointCharHandle, 0, 12, (uint8_t*)point_data);
+    // 優先處理 BlueNRG 底層 HCI 事件（必須高頻呼叫）
+    MX_BlueNRG_MS_Process();
 
-        if (ret != BLE_STATUS_SUCCESS) {
-            len = snprintf(dbg_msg, sizeof(dbg_msg), "[BLE Error] Code: 0x%02X\r\n", ret);
-            HAL_UART_Transmit(&huart1, (uint8_t*)dbg_msg, len, 100);
+    // 非阻塞地取點（timeout=0：佇列空就直接跳過，不等待）
+    if (osMessageQueueGet(blePointQueueHandle, &point, NULL, 0) == osOK) {
+        point_data[0] = point.px;
+        point_data[1] = point.py;
+        point_data[2] = point.pz;
+
+        tBleStatus ret = aci_gatt_update_char_value(
+            ScannerServHandle, PointCharHandle, 0, 12, (uint8_t*)point_data);
+
+        if (ret == 0x64) {
+            // BLE TX buffer 滿：丟棄這個點，讓 BlueNRG 喘口氣，絕不卡死
+            osDelay(10);
+        } else if (ret != BLE_STATUS_SUCCESS) {
+            len = snprintf(dbg_msg, sizeof(dbg_msg), "[BLE Err] 0x%02X\r\n", ret);
+            HAL_UART_Transmit(&huart1, (uint8_t*)dbg_msg, len, 50);
         }
-        ble_send_ready = 0;
     }
 
-    MX_BlueNRG_MS_Process();
-    osDelay(10);
+    osDelay(5);
   }
   /* USER CODE END 5 */
 }
@@ -810,8 +825,6 @@ void StartDefaultTask(void *argument)
 void StartTask02(void *argument)
 {
   /* USER CODE BEGIN StartTask02 */
-	osThreadSetPriority(ToF_Sensor_TaskHandle, osPriorityNormal);
-
   uint32_t filter_buf[FILTER_SIZE] = {0};
   uint8_t buf_idx = 0;
   uint32_t sum = 0;
@@ -909,60 +922,55 @@ void StartTask03(void *argument)
 void StartTask04(void *argument)
 {
   /* USER CODE BEGIN StartTask04 */
-  osThreadSetPriority(Telemetry_TaskHandle, osPriorityRealtime);
-
   static char uart_buf[128];
   uint8_t last_state = 0;
-  uint8_t btn_prev = 0; // 記錄按鍵上一次的狀態
+  uint8_t btn_prev = 0;
   int len;
+  BlePoint_t point;
 
-  len = snprintf(uart_buf, sizeof(uart_buf), "\r\n[DEBUG] 通訊任務 (Task04) 啟動成功！\r\n");
+  len = snprintf(uart_buf, sizeof(uart_buf), "\r\n[Telemetry Task] 啟動！\r\n");
   HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
 
   for(;;)
   {
-    // === 1. 暴力輪詢按鍵 (絕對不會當機) ===
+    // === 1. 按鍵輪詢（低優先，但 osDelay(50) 足夠響應人手操作）===
     uint8_t btn_now = BSP_PB_GetState(BUTTON_USER);
-    if (btn_now == 1 && btn_prev == 0) { // 偵測按下的那個瞬間
+    if (btn_now == 1 && btn_prev == 0) {
         is_scanning = !is_scanning;
     }
     btn_prev = btn_now;
 
-    // === 2. 即時狀態回饋與真實 LED ===
+    // === 2. 狀態切換回饋：只在狀態改變時才做 UART，不在熱路徑中 ===
     if (is_scanning != last_state) {
-            if (is_scanning) {
-                len = snprintf(uart_buf, sizeof(uart_buf), "\r\n>>> 掃描開始 (綠燈) <<<\r\n");
-                HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
-
-                // 🌟 拔除 BSP_LED_On，改回你原本寫的 PA5！
-                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-            } else {
-                len = snprintf(uart_buf, sizeof(uart_buf), "\r\n>>> 掃描停止 (紅燈) <<<\r\n");
-                HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
-
-                // 🌟 拔除 BSP_LED_Off，改回你原本寫的 PA5！
-                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-            }
-            last_state = is_scanning;
+        if (is_scanning) {
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+            len = snprintf(uart_buf, sizeof(uart_buf), "\r\n>>> 掃描開始 <<<\r\n");
+            HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 50);
+        } else {
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+            len = snprintf(uart_buf, sizeof(uart_buf), "\r\n>>> 掃描停止 <<<\r\n");
+            HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 50);
         }
+        last_state = is_scanning;
+    }
 
-    // === 3. 資料打包發送 ===
+    // === 3. 資料打包並以「射後不理」方式放入佇列 ===
     if (is_scanning) {
-        float r = (float)global_display_dmm / 10.0f;
+        float r         = (float)global_display_dmm / 10.0f;
         float pitch_rad = global_pitch * (3.14159265f / 180.0f);
         float roll_rad  = global_roll  * (3.14159265f / 180.0f);
 
-        float px = r * sinf(pitch_rad) * cosf(roll_rad);
-        float py = -r * sinf(roll_rad);
-        float pz = r * cosf(pitch_rad) * cosf(roll_rad);
+        point.px = r * sinf(pitch_rad) * cosf(roll_rad);
+        point.py = -r * sinf(roll_rad);
+        point.pz = r * cosf(pitch_rad) * cosf(roll_rad);
 
-        len = snprintf(uart_buf, sizeof(uart_buf), "%.1f,%.1f,%.1f\r\n", px, py, pz);
-        HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
-
-        ble_px = px; ble_py = py; ble_pz = pz;
-        ble_send_ready = 1;
+        // 先清空舊點（如果 BLE 任務來不及消費），再放入新點
+        // 這確保佇列裡永遠是最新資料，且絕不阻塞
+        osMessageQueueReset(blePointQueueHandle);
+        osMessageQueuePut(blePointQueueHandle, &point, 0, 0);
     }
-    osDelay(100);
+
+    osDelay(50); // 20Hz 資料生產速率（目標：穩定 10Hz+ 到達 Python 端）
   }
   /* USER CODE END StartTask04 */
 }

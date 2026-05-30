@@ -45,7 +45,7 @@
  * 1 to send environmental and motion data when pushing the user button
  * 0 to send environmental and motion data automatically (period = 1 sec)
  */
-#define USE_BUTTON 0
+#define USE_BUTTON 1
 
 /* Private macros ------------------------------------------------------------*/
 

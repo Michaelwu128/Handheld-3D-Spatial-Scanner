@@ -196,4 +196,20 @@ void GAP_ConnectionComplete_CB(uint8_t addr[6], uint16_t handle)
     PRINTF("%02X-", addr[i]);
   }
   PRINTF("%02X\n", addr[0]);
+
+  /* 主動請求縮短 BLE 連接間隔：
+   * 預設值可能高達 100-200ms（~5-10Hz），嚴重限制吞吐量。
+   * 請求 10-20ms 間隔，理論上支援 50-100Hz 的通知速率。
+   * 單位：1.25ms/unit。
+   * 8  × 1.25ms =  10ms (min)
+   * 16 × 1.25ms =  20ms (max)
+   * Central (PC/手機) 有權拒絕，但 Windows BLE 通常會接受。
+   */
+  aci_l2cap_connection_parameter_update_request(
+      handle,
+      8,    /* conn_min_interval: 8 × 1.25ms = 10ms  */
+      16,   /* conn_max_interval: 16 × 1.25ms = 20ms */
+      0,    /* slave_latency: 0（不允許跳過連接事件） */
+      500   /* supervision_timeout: 500 × 10ms = 5s  */
+  );
 }
