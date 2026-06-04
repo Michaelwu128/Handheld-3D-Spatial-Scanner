@@ -1064,11 +1064,11 @@ void StartIMUTask(void *argument)
   uint8_t raw_imu[12];
   uint8_t raw_mag[6];
 
-  // === 新增：磁力計原始值與校準後的物理值變數 ===
+  // 磁力計原始值與校準後的物理值變數
   int16_t mx_raw = 0, my_raw = 0, mz_raw = 0;
   float mx_cal = 0.0f, my_cal = 0.0f, mz_cal = 0.0f;
 
-  // === 新增：貼上我們剛才算好的專屬硬磁校準參數 ===
+  // 貼上我們算好的專屬硬磁校準參數
   const int16_t mag_x_offset = -497;
   const int16_t mag_y_offset = 851;
   const int16_t mag_z_offset = 4897;
@@ -1090,93 +1090,101 @@ void StartIMUTask(void *argument)
           printf("[IMU] LSM6DSL not found (0x%02X)\r\n", whoAmI);
       }
 
+
       // ----- 初始化 LIS3MDL -----
-      whoAmI = 0;
-      HAL_I2C_Mem_Read(&hi2c2, LIS3MDL_ADDR, LIS3MDL_WHO_AM_I_REG, 1, &whoAmI, 1, 100);
-      if (whoAmI == 0x3D) {
-          // CTRL_REG1: XY ultra-high performance, ODR=80Hz
-          ctrl = 0x7C;
-          HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG1, 1, &ctrl, 1, 100);
-          // CTRL_REG2: Full scale ±4 gauss
-          ctrl = 0x00;
-          HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG2, 1, &ctrl, 1, 100);
-          // CTRL_REG3: Continuous measurement mode
-          ctrl = 0x00;
-          HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG3, 1, &ctrl, 1, 100);
-          // CTRL_REG4: Z ultra-high performance
-          ctrl = 0x0C;
-          HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG4, 1, &ctrl, 1, 100);
-          mag_ok = 1;
-          printf("[IMU] LIS3MDL OK (WHO_AM_I=0x3D) → 9-axis mode\r\n");
-      } else {
-          printf("[IMU] LIS3MDL not found (0x%02X) → 6-axis fallback\r\n", whoAmI);
-      }
+       whoAmI = 0;
+       HAL_I2C_Mem_Read(&hi2c2, LIS3MDL_ADDR, LIS3MDL_WHO_AM_I_REG, 1, &whoAmI, 1, 100);
+       if (whoAmI == 0x3D) {
+           // CTRL_REG1: XY ultra-high performance, ODR=80Hz
+           ctrl = 0x7C;
+           HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG1, 1, &ctrl, 1, 100);
+           // CTRL_REG2: Full scale ±4 gauss
+           ctrl = 0x00;
+           HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG2, 1, &ctrl, 1, 100);
+           // CTRL_REG3: Continuous measurement mode
+           ctrl = 0x00;
+           HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG3, 1, &ctrl, 1, 100);
+           // CTRL_REG4: Z ultra-high performance
+           ctrl = 0x0C;
+           HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG4, 1, &ctrl, 1, 100);
+           mag_ok = 1;
+           printf("[IMU] LIS3MDL OK (WHO_AM_I=0x3D) → 9-axis mode\r\n");
+       } else {
+           printf("[IMU] LIS3MDL not found (0x%02X) → 6-axis fallback\r\n", whoAmI);
+       }
 
-      osMutexRelease(i2c2MutexHandle);
-  }
+       osMutexRelease(i2c2MutexHandle);
+   }
 
-  // 修改：原本你的註解寫 beta 不影響 Yaw 漂移，現在我們啟用 9 軸了，
-  // 為了讓磁力計強烈地把 Yaw 拉回絕對北方，建議將第一個參數（beta）先恢復到標準值或更低的 0.1f 試試看
-  AHRS_Init(0.1f, 50.0f);
+   // 【優化點 1】：重新拉高 beta 權重至 0.15f
+   // 既然你一定要 9 軸絕對精準不飄移，演算法就必須加大對磁力計的信任度，快速拉回航向角！
+   AHRS_Init(0.15f, 50.0f);
 
-  for(;;)
-  {
-    if (imu_ok) {
-        if (osMutexAcquire(i2c2MutexHandle, 50) == osOK) {
+   for(;;)
+   {
+     if (imu_ok) {
+         // 【優化點 2】：將 Mutex 等待時間限制在 10ms，避免卡死其他任務
+         if (osMutexAcquire(i2c2MutexHandle, 10) == osOK) {
 
-            // 1. 一次讀取陀螺儀+加速度計共 12 bytes
-            HAL_I2C_Mem_Read(&hi2c2, LSM6DSL_ADDR, LSM6DSL_OUTX_L_G, 1, raw_imu, 12, 100);
+             // 【優化點 3】：讀取超時從 100ms 降到 5ms（極速讀取）
+             HAL_I2C_Mem_Read(&hi2c2, LSM6DSL_ADDR, LSM6DSL_OUTX_L_G, 1, raw_imu, 12, 5);
 
-            // 2. 修改：啟用磁力計讀取，直接將位址寫死為 0x28，避免舊定義的 | 0x80 導致 I2C 卡死
-            if (mag_ok) {
-                HAL_I2C_Mem_Read(&hi2c2, LIS3MDL_ADDR, 0x28, 1, raw_mag, 6, 100);
-            }
+             // 【優化點 4】：分時分流！在讀取極慢的磁力計前，先短暫釋放 CPU 1 毫秒
+             // 這樣可以讓出 I2C 總線給 ToF 任務插隊讀取，座標點掃描速度立刻就飆起來了！
+             osMutexRelease(i2c2MutexHandle);
+             osDelay(1);
 
-            osMutexRelease(i2c2MutexHandle); // 讀完立刻釋放 Mutex
+             if (mag_ok) {
+                 if (osMutexAcquire(i2c2MutexHandle, 10) == osOK) {
+                     // 直接讀取 0x28 暫存器，超時設為 5ms
+                     HAL_I2C_Mem_Read(&hi2c2, LIS3MDL_ADDR, 0x28, 1, raw_mag, 6, 5);
+                     osMutexRelease(i2c2MutexHandle);
+                 }
+             }
 
-            // ----- 解析 LSM6DSL 原始數據 -----
-            global_imu_data.gx = (int16_t)((raw_imu[1]  << 8) | raw_imu[0]);
-            global_imu_data.gy = (int16_t)((raw_imu[3]  << 8) | raw_imu[2]);
-            global_imu_data.gz = (int16_t)((raw_imu[5]  << 8) | raw_imu[4]);
-            global_imu_data.ax = (int16_t)((raw_imu[7]  << 8) | raw_imu[6]);
-            global_imu_data.ay = (int16_t)((raw_imu[9]  << 8) | raw_imu[8]);
-            global_imu_data.az = (int16_t)((raw_imu[11] << 8) | raw_imu[10]);
+             // ----- 所有的數學運算全部移到 Mutex 外面進行，完全不佔用 I2C 資源 -----
+             global_imu_data.gx = (int16_t)((raw_imu[1]  << 8) | raw_imu[0]);
+             global_imu_data.gy = (int16_t)((raw_imu[3]  << 8) | raw_imu[2]);
+             global_imu_data.gz = (int16_t)((raw_imu[5]  << 8) | raw_imu[4]);
+             global_imu_data.ax = (int16_t)((raw_imu[7]  << 8) | raw_imu[6]);
+             global_imu_data.ay = (int16_t)((raw_imu[9]  << 8) | raw_imu[8]);
+             global_imu_data.az = (int16_t)((raw_imu[11] << 8) | raw_imu[10]);
 
-            // ----- 解析 LIS3MDL 原始數據並進行硬磁校準 -----
-            if (mag_ok) {
-                mx_raw = (int16_t)((raw_mag[1] << 8) | raw_mag[0]);
-                my_raw = (int16_t)((raw_mag[3] << 8) | raw_mag[2]);
-                mz_raw = (int16_t)((raw_mag[5] << 8) | raw_mag[4]);
+             if (mag_ok) {
+                 mx_raw = (int16_t)((raw_mag[1] << 8) | raw_mag[0]);
+                 my_raw = (int16_t)((raw_mag[3] << 8) | raw_mag[2]);
+                 mz_raw = (int16_t)((raw_mag[5] << 8) | raw_mag[4]);
 
-                // 減去 Offset 得到校準後的地磁強度
-                mx_cal = (float)(mx_raw - mag_x_offset);
-                my_cal = (float)(my_raw - mag_y_offset);
-                mz_cal = (float)(mz_raw - mag_z_offset);
-            }
+                 // 扣除硬磁 Offset
+                 mx_cal = (float)(mx_raw - mag_x_offset);
+                 my_cal = (float)(my_raw - mag_y_offset);
+                 mz_cal = (float)(mz_raw - mag_z_offset);
+             }
 
-            // 轉換為物理單位
-            float ax = (float)global_imu_data.ax / 16384.0f;
-            float ay = (float)global_imu_data.ay / 16384.0f;
-            float az = (float)global_imu_data.az / 16384.0f;
+             // 轉換為物理單位
+             float ax = (float)global_imu_data.ax / 16384.0f;
+             float ay = (float)global_imu_data.ay / 16384.0f;
+             float az = (float)global_imu_data.az / 16384.0f;
 
-            float gx = (float)global_imu_data.gx * 70.0e-3f * (3.14159265f / 180.0f);
-            float gy = (float)global_imu_data.gy * 70.0e-3f * (3.14159265f / 180.0f);
-            float gz = (float)global_imu_data.gz * 70.0e-3f * (3.14159265f / 180.0f);
+             float gx = (float)global_imu_data.gx * 70.0e-3f * (3.14159265f / 180.0f);
+             float gy = (float)global_imu_data.gy * 70.0e-3f * (3.14159265f / 180.0f);
+             float gz = (float)global_imu_data.gz * 70.0e-3f * (3.14159265f / 180.0f);
 
-            // ----- 修改：將磁力計的 X/Y 對調，且 Z 軸加負號，與 IMU 的座標軸完全對齊 -----
-            AHRS_Update9(gx, gy, gz, ax, ay, az, my_cal, mx_cal, -mz_cal);
+             // ----- 進行 9 軸感測器官方標準軸向對齊 -----
+             AHRS_Update9(gx, gy, gz, ax, ay, az, my_cal, mx_cal, -mz_cal);
 
-            // 將四元數輸出存入全域變數，供 Task04 讀取
-            AHRS_GetQuaternion(
-                (float *)&global_q0, (float *)&global_q1,
-                (float *)&global_q2, (float *)&global_q3
-            );
-        }
-    }
-    osDelay(20); // 50Hz 更新率
-  }
-  /* USER CODE END StartIMUTask */
-}
+             // 輸出四元數存入全域變數
+             AHRS_GetQuaternion(
+                 (float *)&global_q0, (float *)&global_q1,
+                 (float *)&global_q2, (float *)&global_q3
+             );
+         }
+     }
+     osDelay(20); // 穩定 50Hz 更新率
+   }
+   /* USER CODE END StartIMUTask */
+ }
+
 
 
 /**
