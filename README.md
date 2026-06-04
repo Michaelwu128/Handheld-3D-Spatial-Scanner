@@ -1,54 +1,115 @@
-# 🚀 Wireless 3D Handheld Scanner (無線 3D 手持掃描儀)
 
-## 專案概述
-本專案的目標是使用 STM32CubeIDE，在 STM32L475E IOT Node 開發板上整合多重感測器與藍牙通訊，打造出一台完全無線的 3D 手持掃描儀，並透過 Python 即時渲染點雲圖。
+## <b>SensorDemo_BLESensor-App Application Description</b>
+  
+This application shows how to implement proprietary BLE profiles.
+The communication is done using a STM32 Nucleo board and a Smartphone with BTLE.
 
-## 實作功能
-* **硬體設備：** STM32L475E IOT Node (B-L475E-IOT01A1)
-* **感測器整合：** * 透過 I2C 讀取 VL53L0X (ToF 測距儀) 獲取前方物體距離。
-    * 透過 I2C 讀取 LSM6DSL (IMU 加速度計/陀螺儀) 計算開發板的即時姿態角 (Roll/Pitch)。
-* **座標轉換：** 結合距離與姿態角，透過三角函數將極座標轉換為三維直角座標 (X, Y, Z)。
-* **RTOS 多執行緒：** 導入 FreeRTOS，將感測、運算、通訊等任務分離，並加入防飢餓 (Starvation) 與死結 (Deadlock) 的保護機制。
-* **BLE 無線傳輸：** 捨棄有線 UART，使用低功耗藍牙 (BLE) 將座標資料以 33Hz 的頻率即時傳送至電腦端。
-* **智慧狀態指示：** * 藍色實體按鍵 (User Button) 控制「掃描/待機」狀態。
-    * 綠色 LED2 (PB14) 作為藍牙連線指示燈。
-    * 綠色 LED (PA5) 作為掃描狀態指示燈 (燈亮即代表紀錄中)。
+Example Description:
 
-## 如何使用 `ble_3d_scanner.py` 進行即時繪圖
-本專案附帶了一個 Python 腳本 `ble_3d_scanner.py`，可以透過電腦的藍牙接收開發板傳來的 3D 座標數據，並在畫布上即時渲染出空間點雲 (Point Cloud)。
+This application shows how to implement a peripheral device tailored for 
+interacting with the "ST BLE Sensor" app for Android/iOS devices.
 
-### 執行步驟：
+The "ST BLE Sensor" app is freely available on both GooglePlay and iTunes
+  - iTunes: https://itunes.apple.com/us/app/st-bluems/id993670214
+  - GooglePlay: https://play.google.com/store/apps/details?id=com.st.bluems
+The source code of the "ST BLE Sensor" app is available on GitHub at:
+  - iOS: https://github.com/STMicroelectronics-CentralLabs/STBlueMS_iOS
+  - Android: https://github.com/STMicroelectronics-CentralLabs/STBlueMS_Android
 
-**1. 安裝必備套件**
-請確保你的電腦已安裝 Python 3.8 或以上版本。打開終端機 (Terminal / 命令提示字元 / PowerShell)，輸入以下指令安裝所需的藍牙通訊與繪圖套件：
-```bash
-pip install bleak matplotlib
-```
+@note: NO SUPPORT WILL BE PROVIDED TO YOU BY STMICROELECTRONICS FOR ANY OF THE
+ANDROID/iOS app INCLUDED IN OR REFERENCED BY THIS PACKAGE.
 
-**2. 確認 MAC 位址**
-開啟 `ble_3d_scanner.py` 腳本，確認程式碼中的 `DEVICE_ADDRESS` 變數已設定為你手中開發板的正確 MAC 位址。
-```python
-DEVICE_ADDRESS = "C2:D4:FE:69:B3:EB" # 請替換為實際位址
-```
+After establishing the connection between the STM32 board and the smartphone:
+ -  the temperature and the pressure emulated values are sent by the STM32 board to 
+    the mobile device and are shown in the ENVIRONMENTAL tab;
+ -  the emulated sensor fusion data sent by the STM32 board to the mobile device 
+    reflects into the cube rotation showed in the app's MEMS SENSOR FUSION tab
+ -  the plot of the emulated data (temperature, pressure, sensor fusion data, 
+    accelerometer, gyroscope and magnetometer) sent by the board are shown in the 
+	PLOT DATA tab;
+ -  in the RSSI & Battery tab the RSSI value is shown.
+According to the value of the #define USE_BUTTON in file app_bluenrg_ms.c, the 
+environmental and the motion data can be sent automatically (with 1 sec period) 
+or when the User Button is pressed.
 
-**3. 硬體準備與連線**
-* 將燒錄好韌體的 STM32 開發板接上電源。
-* 觀察板上的 **LED2 (PB14)**，若呈現持續閃爍，代表連線上了。
-* **確保手機的藍牙未連線至開發板**，避免佔用頻道。
-* 在電腦終端機執行腳本：
-```bash
-python ble_3d_scanner.py
-```
-當看到 `✅ 連線成功！正在開啟資料通道...` 並跳出 3D 視窗時，即代表連線完成。
+The communication is done using a vendor specific profile.
 
-**4. 開始掃描**
-* 拿起開發板，按下 **藍色按鈕 (User Button)**。
-* 板上的 **PA5 指示燈 (綠燈)** 亮起，代表開始記錄點雲。
-* 移動開發板進行掃描，電腦螢幕會即時繪製出 3D 軌跡。
-* 掃描完畢後，再次按下 **藍色按鈕** 停止紀錄 (綠燈熄滅)。
+Known limitations:
 
-### 3D 畫布快捷鍵
-* `1`：切換至 **YZ 平面** (側視圖)
-* `2`：切換至 **XZ 平面** (正視圖)
-* `3`：切換至 **XY 平面** (俯視圖)
-* `0`：恢復 **預設 3D 立體視角**
+- When starting the project from Example Selector in STM32CubeMX and regenerating it
+  from ioc file, you may face a build issue. To solve it, if you started the project for the
+  Nucleo-L476RG board, remove from the IDE project the file stm32l4xx_nucleo.c in the Application/User
+  virtual folder and delete, from Src and Inc folders, the files: stm32l4xx_nucleo.c, stm32l4xx_nucleo.h
+  and stm32l4xx_nucleo_errno.h.
+
+### <b>Keywords</b>
+
+BLE, Peripheral, SPI, BlueNRG-M0, BlueNRG-MS
+
+### <b>Directory contents</b>
+
+ - app_bluenrg_ms.c       SensorDemo_BLESensor-App initialization and applicative code
+ 
+ - gatt_db.c              Functions for building GATT DB and handling GATT events
+ 
+ - hci_tl_interface.c     Interface to the BlueNRG HCI Transport Layer 
+ 
+ - main.c                 Main program body
+  
+ - sensor.c               Sensor init and state machine
+ 
+ - stm32**xx_hal_msp.c    Source code for MSP Initialization and de-Initialization
+
+ - stm32**xx_it.c         Source code for interrupt Service Routines
+
+ - stm32**xx_nucleo.c     Source file for the BSP Common driver 
+						
+ - stm32**xx_nucleo_bus.c Source file for the BSP BUS IO driver
+ 
+ - system_stm32**xx.c     CMSIS Cortex-Mx Device Peripheral Access Layer System Source File
+
+ - target_platform.c      Get information on the target device memory
+  
+### <b>Hardware and Software environment</b>
+
+  - This example runs on STM32 Nucleo boards with X-NUCLEO-IDB05A2 STM32 expansion board
+    (the X-NUCLEO-IDB05A1 expansion board can be also used)
+  - This example has been tested with STMicroelectronics:
+    - NUCLEO-L476RG RevC board
+    and can be easily tailored to any other supported device and development board.
+
+ADDITIONAL_BOARD : X-NUCLEO-IDB05A2 https://www.st.com/en/ecosystems/x-nucleo-idb05a2.html
+ADDITIONAL_COMP : BlueNRG-M0 https://www.st.com/en/wireless-connectivity/bluenrg-m0.html
+
+### <b>How to use it?</b>
+
+In order to make the program work, you must do the following:
+
+ - WARNING: before opening the project with any toolchain be sure your folder
+   installation path is not too in-depth since the toolchain may report errors
+   after building.
+
+ - Open STM32CubeIDE (this firmware has been successfully tested with Version 1.17.0).
+   Alternatively you can use the Keil uVision toolchain (this firmware
+   has been successfully tested with V5.38.0) or the IAR toolchain (this firmware has 
+   been successfully tested with Embedded Workbench V9.20.1).
+
+ - Rebuild all files and load your image into target memory.
+
+ - Run the example.
+
+ - Alternatively, you can download the pre-built binaries in "Binary" 
+   folder included in the distributed package.
+
+### <b>Author</b>
+
+SRA Application Team
+
+### <b>License</b>
+
+Copyright (c) 2025 STMicroelectronics.
+All rights reserved.
+
+This software is licensed under terms that can be found in the LICENSE file
+in the root directory of this software component.
+If no LICENSE file comes with this software, it is provided AS-IS.
