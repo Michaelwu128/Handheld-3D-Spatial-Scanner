@@ -50,6 +50,12 @@
 /* 定點運算：將 mm 轉為 0.1mm (deci-millimeter) */
 #define MM_TO_DMM(x) ((uint32_t)(x) * 10)
 #define FILTER_SIZE 1  // <--- 將這裡改成 1，關閉平滑濾波，保留真實的邊緣跳變
+#define LSM3MDL_ADDR         (0x1E << 1)
+#define LSM3MDL_CTRL_REG1    0x20
+#define LSM3MDL_CTRL_REG2    0x21
+#define LSM3MDL_CTRL_REG3    0x22
+#define LSM3MDL_CTRL_REG4    0x23
+#define LSM3MDL_OUT_X_L      0x28
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -240,7 +246,27 @@ int main(void)
     Add_Scanner_Service();
     Set_DeviceConnectable();
     printf("[BLE] 廣播程序已啟動！等待連線...\r\n");
-    /* USER CODE END 2 */
+
+    uint8_t config_data;
+
+    // 让磁力计以 80Hz 频率、超高精度开始采集
+    config_data = 0xFC;
+    HAL_I2C_Mem_Write(&hi2c2, LSM3MDL_ADDR, LSM3MDL_CTRL_REG1, I2C_MEMADD_SIZE_8BIT, &config_data, 1, 100);
+
+    // 设置量程为默认的 ±4 Gauss
+    config_data = 0x00;
+    HAL_I2C_Mem_Write(&hi2c2, LSM3MDL_ADDR, LSM3MDL_CTRL_REG2, I2C_MEMADD_SIZE_8BIT, &config_data, 1, 100);
+
+    // 设置为持续测量模式
+    config_data = 0x00;
+    HAL_I2C_Mem_Write(&hi2c2, LSM3MDL_ADDR, LSM3MDL_CTRL_REG3, I2C_MEMADD_SIZE_8BIT, &config_data, 1, 100);
+
+    // Z轴也选择超高精度
+    config_data = 0x0C;
+    HAL_I2C_Mem_Write(&hi2c2, LSM3MDL_ADDR, LSM3MDL_CTRL_REG4, I2C_MEMADD_SIZE_8BIT, &config_data, 1, 100);
+
+    // 定义用来装磁力计数据的变量
+  /* USER CODE END 2 */
 
   /* Init scheduler */
   osKernelInitialize();
@@ -947,27 +973,40 @@ void StartTask04(void *argument)
   int len;
   BlePoint_t point;
 
+  // 1. 把剛剛從 main 刪掉的變數，改在這邊宣告
+  uint8_t raw_mag[6];
+  int16_t mag_x_raw = 0, mag_y_raw = 0, mag_z_raw = 0;
+  extern I2C_HandleTypeDef hi2c2;
+
   len = snprintf(uart_buf, sizeof(uart_buf), "\r\n[Telemetry Task] 啟動！\r\n");
   HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 100);
 
-  // 按下掃描鍵那一刻的基準點（世界座標），後續所有點都相對於它
   float px_base = 0.0f, py_base = 0.0f, pz_base = 0.0f;
 
   for(;;)
   {
-    // === 1. 按鍵輪詢（低優先，但 osDelay(50) 足夠響應人手操作）===
+    // --- 這裡放我們新加的：讀取磁力計並列印 ---
+    /*if (HAL_I2C_Mem_Read(&hi2c2, (0x1E << 1), 0x28, I2C_MEMADD_SIZE_8BIT, raw_mag, 6, 50) == HAL_OK)
+    {
+        mag_x_raw = (int16_t)((raw_mag[1] << 8) | raw_mag[0]);
+        mag_y_raw = (int16_t)((raw_mag[3] << 8) | raw_mag[2]);
+        mag_z_raw = (int16_t)((raw_mag[5] << 8) | raw_mag[4]);
+
+        len = snprintf(uart_buf, sizeof(uart_buf), "MAG_RAW:%d,%d,%d\r\n", mag_x_raw, mag_y_raw, mag_z_raw);
+        HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 10);
+    }*/
+
+    // === 2. 按鍵輪詢 ===
     uint8_t btn_now = BSP_PB_GetState(BUTTON_USER);
     if (btn_now == 1 && btn_prev == 0) {
         is_scanning = !is_scanning;
     }
     btn_prev = btn_now;
 
-    // === 2. 狀態切換回饋：只在狀態改變時才做 UART，不在熱路徑中 ===
+    // === 3. 狀態切換回饋 ===
     if (is_scanning != last_state) {
         if (is_scanning) {
             HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-
-            // 記錄掃描起點的世界座標（用當下四元數＋絕對距離算一次 p_base）
             float d_base_mm = (float)global_tof_dmm / 10.0f;
             float q0_b = global_q0, q1_b = global_q1;
             float q2_b = global_q2, q3_b = global_q3;
@@ -975,8 +1014,7 @@ void StartTask04(void *argument)
             py_base = -2.0f * (q2_b * q3_b - q0_b * q1_b) * d_base_mm;
             pz_base = -(1.0f - 2.0f * (q1_b * q1_b + q2_b * q2_b)) * d_base_mm;
 
-            len = snprintf(uart_buf, sizeof(uart_buf), "\r\n>>> 掃描開始 <<< base=(%.1f,%.1f,%.1f)\r\n",
-                           px_base, py_base, pz_base);
+            len = snprintf(uart_buf, sizeof(uart_buf), "\r\n>>> 掃描開始 <<< base=(%.1f,%.1f,%.1f)\r\n", px_base, py_base, pz_base);
             HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 50);
         } else {
             HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
@@ -986,25 +1024,18 @@ void StartTask04(void *argument)
         last_state = is_scanning;
     }
 
-    // === 3. 資料打包並以「射後不理」方式放入佇列 ===
+    // === 4. 資料打包 ===
     if (is_scanning) {
-        // 使用絕對距離（非 tare 後的相對距離）以確保幾何正確
         float d_now_mm = (float)global_tof_dmm / 10.0f;
-
-        // 讀取四元數快照（local copy 避免讀取過程中被 IMU_Task 修改）
         float q0_l = global_q0;
         float q1_l = global_q1;
         float q2_l = global_q2;
         float q3_l = global_q3;
 
-        // 計算目前測量點的絕對世界座標
-        // p_body = [0, 0, -d_now_mm]（ToF 沿 body -Z 射出）
-        // p_abs = R * p_body = -R 第三欄 × d_now_mm
         float px_abs = -2.0f * (q1_l * q3_l + q0_l * q2_l) * d_now_mm;
         float py_abs = -2.0f * (q2_l * q3_l - q0_l * q1_l) * d_now_mm;
         float pz_abs = -(1.0f - 2.0f * (q1_l * q1_l + q2_l * q2_l)) * d_now_mm;
 
-        // 減去掃描起點基準，得到相對位移（純平面掃描時 Z ≈ 0）
         point.px = px_abs - px_base;
         point.py = py_abs - py_base;
         point.pz = pz_abs - pz_base;
@@ -1013,7 +1044,7 @@ void StartTask04(void *argument)
         osMessageQueuePut(blePointQueueHandle, &point, 0, 0);
     }
 
-    osDelay(50); // 20Hz 資料生產速率（目標：穩定 10Hz+ 到達 Python 端）
+    osDelay(50);
   }
   /* USER CODE END StartTask04 */
 }
@@ -1033,6 +1064,15 @@ void StartIMUTask(void *argument)
   uint8_t raw_imu[12];
   uint8_t raw_mag[6];
 
+  // 磁力計原始值與校準後的物理值變數
+  int16_t mx_raw = 0, my_raw = 0, mz_raw = 0;
+  float mx_cal = 0.0f, my_cal = 0.0f, mz_cal = 0.0f;
+
+  // 貼上我們算好的專屬硬磁校準參數
+  const int16_t mag_x_offset = -497;
+  const int16_t mag_y_offset = 851;
+  const int16_t mag_z_offset = 4897;
+
   osDelay(100); // 等待其他任務（特別是 ToF）完成開機初始化
 
   if (osMutexAcquire(i2c2MutexHandle, 200) == osOK) {
@@ -1050,84 +1090,102 @@ void StartIMUTask(void *argument)
           printf("[IMU] LSM6DSL not found (0x%02X)\r\n", whoAmI);
       }
 
+
       // ----- 初始化 LIS3MDL -----
-      whoAmI = 0;
-      HAL_I2C_Mem_Read(&hi2c2, LIS3MDL_ADDR, LIS3MDL_WHO_AM_I_REG, 1, &whoAmI, 1, 100);
-      if (whoAmI == 0x3D) {
-          // CTRL_REG1: XY ultra-high performance, ODR=80Hz
-          ctrl = 0x7C;
-          HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG1, 1, &ctrl, 1, 100);
-          // CTRL_REG2: Full scale ±4 gauss
-          ctrl = 0x00;
-          HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG2, 1, &ctrl, 1, 100);
-          // CTRL_REG3: Continuous measurement mode
-          ctrl = 0x00;
-          HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG3, 1, &ctrl, 1, 100);
-          // CTRL_REG4: Z ultra-high performance
-          ctrl = 0x0C;
-          HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG4, 1, &ctrl, 1, 100);
-          mag_ok = 1;
-          printf("[IMU] LIS3MDL OK (WHO_AM_I=0x3D) → 9-axis mode\r\n");
-      } else {
-          printf("[IMU] LIS3MDL not found (0x%02X) → 6-axis fallback\r\n", whoAmI);
-      }
+       whoAmI = 0;
+       HAL_I2C_Mem_Read(&hi2c2, LIS3MDL_ADDR, LIS3MDL_WHO_AM_I_REG, 1, &whoAmI, 1, 100);
+       if (whoAmI == 0x3D) {
+           // CTRL_REG1: XY ultra-high performance, ODR=80Hz
+           ctrl = 0x7C;
+           HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG1, 1, &ctrl, 1, 100);
+           // CTRL_REG2: Full scale ±4 gauss
+           ctrl = 0x00;
+           HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG2, 1, &ctrl, 1, 100);
+           // CTRL_REG3: Continuous measurement mode
+           ctrl = 0x00;
+           HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG3, 1, &ctrl, 1, 100);
+           // CTRL_REG4: Z ultra-high performance
+           ctrl = 0x0C;
+           HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG4, 1, &ctrl, 1, 100);
+           mag_ok = 1;
+           printf("[IMU] LIS3MDL OK (WHO_AM_I=0x3D) → 9-axis mode\r\n");
+       } else {
+           printf("[IMU] LIS3MDL not found (0x%02X) → 6-axis fallback\r\n", whoAmI);
+       }
 
-      osMutexRelease(i2c2MutexHandle);
-  }
+       osMutexRelease(i2c2MutexHandle);
+   }
 
-  // beta=0.5：加速度計修正力道加強，有效抑制 Roll/Pitch 漂移
-  // 板載 LIS3MDL 受硬鐵干擾嚴重，Yaw 暫交由陀螺儀積分，beta 不影響 Yaw 漂移
-  AHRS_Init(0.5f, 50.0f);
+   // 【優化點 1】：重新拉高 beta 權重至 0.15f
+   // 既然你一定要 9 軸絕對精準不飄移，演算法就必須加大對磁力計的信任度，快速拉回航向角！
+   AHRS_Init(0.15f, 50.0f);
 
-  for(;;)
-  {
-    if (imu_ok) {
-        if (osMutexAcquire(i2c2MutexHandle, 50) == osOK) {
+   for(;;)
+   {
+     if (imu_ok) {
+         // 【優化點 2】：將 Mutex 等待時間限制在 10ms，避免卡死其他任務
+         if (osMutexAcquire(i2c2MutexHandle, 10) == osOK) {
 
-            // 一次讀取陀螺儀+加速度計共 12 bytes（OUTX_L_G 開始連續讀）
-            HAL_I2C_Mem_Read(&hi2c2, LSM6DSL_ADDR, LSM6DSL_OUTX_L_G, 1, raw_imu, 12, 100);
+             // 【優化點 3】：讀取超時從 100ms 降到 5ms（極速讀取）
+             HAL_I2C_Mem_Read(&hi2c2, LSM6DSL_ADDR, LSM6DSL_OUTX_L_G, 1, raw_imu, 12, 5);
 
-            // 磁力計讀取暫時停用（硬鐵干擾嚴重，數值不使用，省去 I2C Mutex 占用時間）
-            // 若日後進行硬鐵校正後可重新啟用以下兩行：
-            // if (mag_ok) {
-            //     HAL_I2C_Mem_Read(&hi2c2, LIS3MDL_ADDR, LIS3MDL_OUT_X_L | 0x80, 1, raw_mag, 6, 100);
-            // }
+             // 【優化點 4】：分時分流！在讀取極慢的磁力計前，先短暫釋放 CPU 1 毫秒
+             // 這樣可以讓出 I2C 總線給 ToF 任務插隊讀取，座標點掃描速度立刻就飆起來了！
+             osMutexRelease(i2c2MutexHandle);
+             osDelay(1);
 
-            osMutexRelease(i2c2MutexHandle);
+             if (mag_ok) {
+                 if (osMutexAcquire(i2c2MutexHandle, 10) == osOK) {
+                     // 直接讀取 0x28 暫存器，超時設為 5ms
+                     HAL_I2C_Mem_Read(&hi2c2, LIS3MDL_ADDR, 0x28, 1, raw_mag, 6, 5);
+                     osMutexRelease(i2c2MutexHandle);
+                 }
+             }
 
-            // ----- 解析 LSM6DSL 原始數據 -----
-            global_imu_data.gx = (int16_t)((raw_imu[1]  << 8) | raw_imu[0]);
-            global_imu_data.gy = (int16_t)((raw_imu[3]  << 8) | raw_imu[2]);
-            global_imu_data.gz = (int16_t)((raw_imu[5]  << 8) | raw_imu[4]);
-            global_imu_data.ax = (int16_t)((raw_imu[7]  << 8) | raw_imu[6]);
-            global_imu_data.ay = (int16_t)((raw_imu[9]  << 8) | raw_imu[8]);
-            global_imu_data.az = (int16_t)((raw_imu[11] << 8) | raw_imu[10]);
+             // ----- 所有的數學運算全部移到 Mutex 外面進行，完全不佔用 I2C 資源 -----
+             global_imu_data.gx = (int16_t)((raw_imu[1]  << 8) | raw_imu[0]);
+             global_imu_data.gy = (int16_t)((raw_imu[3]  << 8) | raw_imu[2]);
+             global_imu_data.gz = (int16_t)((raw_imu[5]  << 8) | raw_imu[4]);
+             global_imu_data.ax = (int16_t)((raw_imu[7]  << 8) | raw_imu[6]);
+             global_imu_data.ay = (int16_t)((raw_imu[9]  << 8) | raw_imu[8]);
+             global_imu_data.az = (int16_t)((raw_imu[11] << 8) | raw_imu[10]);
 
-            // 轉換為物理單位
-            // 加速度：FS=±2g，靈敏度 = 16384 LSB/g
-            float ax = (float)global_imu_data.ax / 16384.0f;
-            float ay = (float)global_imu_data.ay / 16384.0f;
-            float az = (float)global_imu_data.az / 16384.0f;
-            // 陀螺儀：FS=±2000dps，靈敏度 = 70 mdps/LSB → 轉 rad/s
-            float gx = (float)global_imu_data.gx * 70.0e-3f * (3.14159265f / 180.0f);
-            float gy = (float)global_imu_data.gy * 70.0e-3f * (3.14159265f / 180.0f);
-            float gz = (float)global_imu_data.gz * 70.0e-3f * (3.14159265f / 180.0f);
+             if (mag_ok) {
+                 mx_raw = (int16_t)((raw_mag[1] << 8) | raw_mag[0]);
+                 my_raw = (int16_t)((raw_mag[3] << 8) | raw_mag[2]);
+                 mz_raw = (int16_t)((raw_mag[5] << 8) | raw_mag[4]);
 
-            // 磁力計暫停使用（硬鐵干擾）→ 6 軸模式（accel + gyro）
-            // 若啟用磁力計，將 0,0,0 替換為 mx, my, mz（需先完成硬鐵校正）
-            AHRS_Update9(gx, gy, gz, ax, ay, az, 0.0f, 0.0f, 0.0f);
+                 // 扣除硬磁 Offset
+                 mx_cal = (float)(mx_raw - mag_x_offset);
+                 my_cal = (float)(my_raw - mag_y_offset);
+                 mz_cal = (float)(mz_raw - mag_z_offset);
+             }
 
-            // 將四元數輸出存入全域變數，供 Task04 讀取
-            AHRS_GetQuaternion(
-                (float *)&global_q0, (float *)&global_q1,
-                (float *)&global_q2, (float *)&global_q3
-            );
-        }
-    }
-    osDelay(20); // 50Hz 更新率，與 AHRS_Init 的 sample_freq=50.0f 一致
-  }
-  /* USER CODE END StartIMUTask */
-}
+             // 轉換為物理單位
+             float ax = (float)global_imu_data.ax / 16384.0f;
+             float ay = (float)global_imu_data.ay / 16384.0f;
+             float az = (float)global_imu_data.az / 16384.0f;
+
+             float gx = (float)global_imu_data.gx * 70.0e-3f * (3.14159265f / 180.0f);
+             float gy = (float)global_imu_data.gy * 70.0e-3f * (3.14159265f / 180.0f);
+             float gz = (float)global_imu_data.gz * 70.0e-3f * (3.14159265f / 180.0f);
+
+             // ----- 進行 9 軸感測器官方標準軸向對齊 -----
+             AHRS_Update9(gx, gy, gz, ax, ay, az, my_cal, mx_cal, -mz_cal);
+
+             // 輸出四元數存入全域變數
+             AHRS_GetQuaternion(
+                 (float *)&global_q0, (float *)&global_q1,
+                 (float *)&global_q2, (float *)&global_q3
+             );
+         }
+     }
+     osDelay(20); // 穩定 50Hz 更新率
+   }
+   /* USER CODE END StartIMUTask */
+ }
+
+
 
 /**
   * @brief  Period elapsed callback in non blocking mode
