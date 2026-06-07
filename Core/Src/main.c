@@ -138,8 +138,7 @@ const osMutexAttr_t i2c2Mutex_attributes = {
 
 // === LIS3MDL 磁力計 I2C 定義 ===
 // B-L475E-IOT01A1 板上 SA1 接 VDD → 7-bit 0x1E → 8-bit 0x3C
-// 若 WHO_AM_I 返回 0x00，請改為 (0x1C << 1) = 0x38
-#define LIS3MDL_ADDR         (0x1C << 1) // 8-bit: 0x38
+#define LIS3MDL_ADDR         (0x1E << 1) // 8-bit: 0x3C（與 main 裡 LSM3MDL_ADDR 相同）
 #define LIS3MDL_WHO_AM_I_REG 0x0F        // 預期回傳 0x3D
 #define LIS3MDL_CTRL_REG1    0x20
 #define LIS3MDL_CTRL_REG2    0x21
@@ -1137,7 +1136,7 @@ void StartIMUTask(void *argument)
              if (mag_ok) {
                  if (osMutexAcquire(i2c2MutexHandle, 10) == osOK) {
                      // 直接讀取 0x28 暫存器，超時設為 5ms
-                     HAL_I2C_Mem_Read(&hi2c2, LIS3MDL_ADDR, 0x28, 1, raw_mag, 6, 5);
+                     HAL_I2C_Mem_Read(&hi2c2, LIS3MDL_ADDR, LIS3MDL_OUT_X_L | 0x80, 1, raw_mag, 6, 5);
                      osMutexRelease(i2c2MutexHandle);
                  }
              }
