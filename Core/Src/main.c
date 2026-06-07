@@ -50,12 +50,8 @@
 /* 定點運算：將 mm 轉為 0.1mm (deci-millimeter) */
 #define MM_TO_DMM(x) ((uint32_t)(x) * 10)
 #define FILTER_SIZE 1  // <--- 將這裡改成 1，關閉平滑濾波，保留真實的邊緣跳變
-#define LSM3MDL_ADDR         (0x1E << 1)
-#define LSM3MDL_CTRL_REG1    0x20
-#define LSM3MDL_CTRL_REG2    0x21
-#define LSM3MDL_CTRL_REG3    0x22
-#define LSM3MDL_CTRL_REG4    0x23
-#define LSM3MDL_OUT_X_L      0x28
+/* 設 1：UART 輸出 GYRO_RAW / MAG_RAW（測量 B+C 用）；正式使用請設 0 */
+#define DEBUG_SENSOR_RAW 0
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -138,8 +134,8 @@ const osMutexAttr_t i2c2Mutex_attributes = {
 
 // === LIS3MDL 磁力計 I2C 定義 ===
 // B-L475E-IOT01A1 板上 SA1 接 VDD → 7-bit 0x1E → 8-bit 0x3C
-// 若 WHO_AM_I 返回 0x00，請改為 (0x1C << 1) = 0x38
-#define LIS3MDL_ADDR         (0x1C << 1) // 8-bit: 0x38
+#define LIS3MDL_ADDR         (0x1E << 1) // 8-bit: 0x3C
+#define LIS3MDL_ADDR_ALT     (0x1C << 1) // 8-bit: 0x38（備用，SA1=GND 時）
 #define LIS3MDL_WHO_AM_I_REG 0x0F        // 預期回傳 0x3D
 #define LIS3MDL_CTRL_REG1    0x20
 #define LIS3MDL_CTRL_REG2    0x21
@@ -247,25 +243,7 @@ int main(void)
     Set_DeviceConnectable();
     printf("[BLE] 廣播程序已啟動！等待連線...\r\n");
 
-    uint8_t config_data;
-
-    // 让磁力计以 80Hz 频率、超高精度开始采集
-    config_data = 0xFC;
-    HAL_I2C_Mem_Write(&hi2c2, LSM3MDL_ADDR, LSM3MDL_CTRL_REG1, I2C_MEMADD_SIZE_8BIT, &config_data, 1, 100);
-
-    // 设置量程为默认的 ±4 Gauss
-    config_data = 0x00;
-    HAL_I2C_Mem_Write(&hi2c2, LSM3MDL_ADDR, LSM3MDL_CTRL_REG2, I2C_MEMADD_SIZE_8BIT, &config_data, 1, 100);
-
-    // 设置为持续测量模式
-    config_data = 0x00;
-    HAL_I2C_Mem_Write(&hi2c2, LSM3MDL_ADDR, LSM3MDL_CTRL_REG3, I2C_MEMADD_SIZE_8BIT, &config_data, 1, 100);
-
-    // Z轴也选择超高精度
-    config_data = 0x0C;
-    HAL_I2C_Mem_Write(&hi2c2, LSM3MDL_ADDR, LSM3MDL_CTRL_REG4, I2C_MEMADD_SIZE_8BIT, &config_data, 1, 100);
-
-    // 定义用来装磁力计数据的变量
+    /* LIS3MDL 初始化改由 StartIMUTask 統一處理（避免重複寫 I2C、位址不一致） */
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -1059,6 +1037,7 @@ void StartIMUTask(void *argument)
   /* USER CODE BEGIN StartIMUTask */
   uint8_t imu_ok  = 0; // LSM6DSL 是否成功初始化
   uint8_t mag_ok  = 0; // LIS3MDL 是否成功初始化
+  uint16_t mag_i2c_addr = LIS3MDL_ADDR;
   uint8_t whoAmI  = 0;
   uint8_t ctrl    = 0;
   uint8_t raw_imu[12];
@@ -1068,10 +1047,14 @@ void StartIMUTask(void *argument)
   int16_t mx_raw = 0, my_raw = 0, mz_raw = 0;
   float mx_cal = 0.0f, my_cal = 0.0f, mz_cal = 0.0f;
 
-  // 貼上我們算好的專屬硬磁校準參數
-  const int16_t mag_x_offset = -497;
-  const int16_t mag_y_offset = 851;
-  const int16_t mag_z_offset = 4897;
+  // 本板硬磁校正（測量 C ×2 取 min/max 平均）
+  const int16_t mag_x_offset = -1765;
+  const int16_t mag_y_offset = -1183;
+  const int16_t mag_z_offset = -1475;
+  // 陀螺零偏（測量 B：板子平放不動）
+  const int16_t gyro_x_bias = 15;
+  const int16_t gyro_y_bias = -29;
+  const int16_t gyro_z_bias = 6;
 
   osDelay(100); // 等待其他任務（特別是 ToF）完成開機初始化
 
@@ -1091,24 +1074,37 @@ void StartIMUTask(void *argument)
       }
 
 
-      // ----- 初始化 LIS3MDL -----
+      // ----- 初始化 LIS3MDL（先試 0x3C，失敗再試 0x38）-----
+       mag_i2c_addr = LIS3MDL_ADDR;
        whoAmI = 0;
-       HAL_I2C_Mem_Read(&hi2c2, LIS3MDL_ADDR, LIS3MDL_WHO_AM_I_REG, 1, &whoAmI, 1, 100);
+       HAL_I2C_Mem_Read(&hi2c2, mag_i2c_addr, LIS3MDL_WHO_AM_I_REG,
+                        I2C_MEMADD_SIZE_8BIT, &whoAmI, 1, 100);
+       if (whoAmI != 0x3D) {
+           mag_i2c_addr = LIS3MDL_ADDR_ALT;
+           whoAmI = 0;
+           HAL_I2C_Mem_Read(&hi2c2, mag_i2c_addr, LIS3MDL_WHO_AM_I_REG,
+                            I2C_MEMADD_SIZE_8BIT, &whoAmI, 1, 100);
+       }
        if (whoAmI == 0x3D) {
            // CTRL_REG1: XY ultra-high performance, ODR=80Hz
            ctrl = 0x7C;
-           HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG1, 1, &ctrl, 1, 100);
+           HAL_I2C_Mem_Write(&hi2c2, mag_i2c_addr, LIS3MDL_CTRL_REG1,
+                             I2C_MEMADD_SIZE_8BIT, &ctrl, 1, 100);
            // CTRL_REG2: Full scale ±4 gauss
            ctrl = 0x00;
-           HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG2, 1, &ctrl, 1, 100);
+           HAL_I2C_Mem_Write(&hi2c2, mag_i2c_addr, LIS3MDL_CTRL_REG2,
+                             I2C_MEMADD_SIZE_8BIT, &ctrl, 1, 100);
            // CTRL_REG3: Continuous measurement mode
            ctrl = 0x00;
-           HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG3, 1, &ctrl, 1, 100);
+           HAL_I2C_Mem_Write(&hi2c2, mag_i2c_addr, LIS3MDL_CTRL_REG3,
+                             I2C_MEMADD_SIZE_8BIT, &ctrl, 1, 100);
            // CTRL_REG4: Z ultra-high performance
            ctrl = 0x0C;
-           HAL_I2C_Mem_Write(&hi2c2, LIS3MDL_ADDR, LIS3MDL_CTRL_REG4, 1, &ctrl, 1, 100);
+           HAL_I2C_Mem_Write(&hi2c2, mag_i2c_addr, LIS3MDL_CTRL_REG4,
+                             I2C_MEMADD_SIZE_8BIT, &ctrl, 1, 100);
            mag_ok = 1;
-           printf("[IMU] LIS3MDL OK (WHO_AM_I=0x3D) → 9-axis mode\r\n");
+           printf("[IMU] LIS3MDL OK (WHO_AM_I=0x3D, addr=0x%02X) → 9-axis mode\r\n",
+                  mag_i2c_addr);
        } else {
            printf("[IMU] LIS3MDL not found (0x%02X) → 6-axis fallback\r\n", whoAmI);
        }
@@ -1127,7 +1123,12 @@ void StartIMUTask(void *argument)
          if (osMutexAcquire(i2c2MutexHandle, 10) == osOK) {
 
              // 【優化點 3】：讀取超時從 100ms 降到 5ms（極速讀取）
-             HAL_I2C_Mem_Read(&hi2c2, LSM6DSL_ADDR, LSM6DSL_OUTX_L_G, 1, raw_imu, 12, 5);
+             if (HAL_I2C_Mem_Read(&hi2c2, LSM6DSL_ADDR, LSM6DSL_OUTX_L_G,
+                                  I2C_MEMADD_SIZE_8BIT, raw_imu, 12, 15) != HAL_OK) {
+                 osMutexRelease(i2c2MutexHandle);
+                 osDelay(20);
+                 continue;
+             }
 
              // 【優化點 4】：分時分流！在讀取極慢的磁力計前，先短暫釋放 CPU 1 毫秒
              // 這樣可以讓出 I2C 總線給 ToF 任務插隊讀取，座標點掃描速度立刻就飆起來了！
@@ -1137,15 +1138,16 @@ void StartIMUTask(void *argument)
              if (mag_ok) {
                  if (osMutexAcquire(i2c2MutexHandle, 10) == osOK) {
                      // 直接讀取 0x28 暫存器，超時設為 5ms
-                     HAL_I2C_Mem_Read(&hi2c2, LIS3MDL_ADDR, 0x28, 1, raw_mag, 6, 5);
+                     HAL_I2C_Mem_Read(&hi2c2, mag_i2c_addr, LIS3MDL_OUT_X_L | 0x80,
+                                      I2C_MEMADD_SIZE_8BIT, raw_mag, 6, 15);
                      osMutexRelease(i2c2MutexHandle);
                  }
              }
 
              // ----- 所有的數學運算全部移到 Mutex 外面進行，完全不佔用 I2C 資源 -----
-             global_imu_data.gx = (int16_t)((raw_imu[1]  << 8) | raw_imu[0]);
-             global_imu_data.gy = (int16_t)((raw_imu[3]  << 8) | raw_imu[2]);
-             global_imu_data.gz = (int16_t)((raw_imu[5]  << 8) | raw_imu[4]);
+             global_imu_data.gx = (int16_t)((raw_imu[1]  << 8) | raw_imu[0]) - gyro_x_bias;
+             global_imu_data.gy = (int16_t)((raw_imu[3]  << 8) | raw_imu[2]) - gyro_y_bias;
+             global_imu_data.gz = (int16_t)((raw_imu[5]  << 8) | raw_imu[4]) - gyro_z_bias;
              global_imu_data.ax = (int16_t)((raw_imu[7]  << 8) | raw_imu[6]);
              global_imu_data.ay = (int16_t)((raw_imu[9]  << 8) | raw_imu[8]);
              global_imu_data.az = (int16_t)((raw_imu[11] << 8) | raw_imu[10]);
@@ -1178,6 +1180,22 @@ void StartIMUTask(void *argument)
                  (float *)&global_q0, (float *)&global_q1,
                  (float *)&global_q2, (float *)&global_q3
              );
+
+#if DEBUG_SENSOR_RAW
+             {
+                 static uint8_t dbg_cnt = 0;
+                 int16_t gx_raw = (int16_t)((raw_imu[1] << 8) | raw_imu[0]);
+                 int16_t gy_raw = (int16_t)((raw_imu[3] << 8) | raw_imu[2]);
+                 int16_t gz_raw = (int16_t)((raw_imu[5] << 8) | raw_imu[4]);
+                 if (++dbg_cnt >= 5) {
+                     dbg_cnt = 0;
+                     printf("GYRO_RAW:%d,%d,%d\r\n", gx_raw, gy_raw, gz_raw);
+                     if (mag_ok) {
+                         printf("MAG_RAW:%d,%d,%d\r\n", mx_raw, my_raw, mz_raw);
+                     }
+                 }
+             }
+#endif
          }
      }
      osDelay(20); // 穩定 50Hz 更新率
