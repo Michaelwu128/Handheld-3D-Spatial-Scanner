@@ -45,7 +45,8 @@
  * 1 to send environmental and motion data when pushing the user button
  * 0 to send environmental and motion data automatically (period = 1 sec)
  */
-#define USE_BUTTON 0
+/* 設 1：停用 ST demo 每秒 HAL_Delay(1000)，避免卡住自訂掃描器的 BLE 傳輸 */
+#define USE_BUTTON 1
 
 /* Private macros ------------------------------------------------------------*/
 

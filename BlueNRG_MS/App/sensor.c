@@ -28,6 +28,7 @@
 #include "hci_const.h"
 #include "bluenrg_aci_const.h"
 #include "bluenrg_gatt_aci.h"
+#include "bluenrg_l2cap_aci.h"
 
 /* Private typedef -----------------------------------------------------------*/
 /* Private define ------------------------------------------------------------*/
@@ -196,4 +197,7 @@ void GAP_ConnectionComplete_CB(uint8_t addr[6], uint16_t handle)
     PRINTF("%02X-", addr[i]);
   }
   PRINTF("%02X\n", addr[0]);
+
+  /* 請求 200 ms 連線間隔 (160 × 1.25 ms) ≈ 5 Hz，避免預設 1 s 等級的慢速連線 */
+  aci_l2cap_connection_parameter_update_request(handle, 160, 160, 0, 400);
 }
