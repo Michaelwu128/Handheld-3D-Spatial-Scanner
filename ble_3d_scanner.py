@@ -12,7 +12,7 @@ from bleak import BleakClient
 DEVICE_ADDRESS = "C4:CA:07:9A:93:BA"
 #DEVICE_ADDRESS = "FF:6B:06:B4:46:D5"
 CHARACTERISTIC_UUID = "d973f2e1-b19e-11e2-9e96-0800200c9a66"
-MAX_POINTS = 500
+MAX_POINTS = 5000
 
 # 使用 deque(maxlen) 取代 list：超過上限自動丟最舊的點，且 O(1) append
 x_data = deque(maxlen=MAX_POINTS)

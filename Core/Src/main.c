@@ -1038,7 +1038,7 @@ void StartTask04(void *argument)
 
         point.px = px_abs - px_base;
         point.py = py_abs - py_base;
-        point.pz = pz_abs - pz_base;
+        point.pz = -(pz_abs - pz_base);
 
         osMessageQueueReset(blePointQueueHandle);
         osMessageQueuePut(blePointQueueHandle, &point, 0, 0);
