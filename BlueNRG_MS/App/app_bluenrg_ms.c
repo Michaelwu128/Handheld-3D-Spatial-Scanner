@@ -45,8 +45,8 @@
  * 1 to send environmental and motion data when pushing the user button
  * 0 to send environmental and motion data automatically (period = 1 sec)
  */
-/* 設 1：停用 ST demo 每秒 HAL_Delay(1000)，避免卡住自訂掃描器的 BLE 傳輸 */
-#define USE_BUTTON 1
+/* 0：掃描按鍵由 main.c EXTI 處理，不在此跑 ST demo（避免 HAL_Delay 卡住 BLE） */
+#define USE_BUTTON 0
 
 /* Private macros ------------------------------------------------------------*/
 
@@ -65,7 +65,7 @@ static volatile uint8_t user_button_init_state = 1;
 static volatile uint8_t user_button_pressed = 0;
 
 /* USER CODE BEGIN PV */
-
+extern volatile uint8_t user_btn_toggle_pending;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -262,45 +262,29 @@ static void User_Process(void)
   }
 
 #if USE_BUTTON
-  /* Check if the user has pushed the button */
   if (user_button_pressed)
   {
-    /* Debouncing */
     HAL_Delay(50);
-
-    /* Wait until the User Button is released */
     while (BSP_PB_GetState(BUTTON_KEY) == !user_button_init_state);
-
-    /* Debouncing */
     HAL_Delay(50);
-#endif
+
     BSP_LED_Toggle(LED2);
 
     if (connected)
     {
-      /* Set a random seed */
       srand(HAL_GetTick());
-
-      /* Update emulated Environmental data */
       Set_Random_Environmental_Values(&data_t, &data_p);
       BlueMS_Environmental_Update((int32_t)(data_p *100), (int16_t)(data_t * 10));
-
-      /* Update emulated Acceleration, Gyroscope and Sensor Fusion data */
       Set_Random_Motion_Values(counter);
       Acc_Update(&x_axes, &g_axes, &m_axes);
       Quat_Update(&q_axes);
 
-      counter ++;
+      counter++;
       if (counter == 40) {
         counter = 0;
         Reset_Motion_Values();
       }
-#if !USE_BUTTON
-      HAL_Delay(1000); /* wait 1 sec before sending new data */
-#endif
     }
-#if USE_BUTTON
-    /* Reset the User Button flag */
     user_button_pressed = 0;
   }
 #endif
@@ -387,6 +371,9 @@ static void Reset_Motion_Values(void)
   */
 void BSP_PB_Callback(Button_TypeDef Button)
 {
-  /* Set the User Button flag */
+  UNUSED(Button);
+  user_btn_toggle_pending = 1;
+#if USE_BUTTON
   user_button_pressed = 1;
+#endif
 }

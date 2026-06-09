@@ -165,6 +165,7 @@ volatile float global_q3 = 0.0f;
 
 // === 新增：掃描狀態旗標 ===
 volatile uint8_t is_scanning = 0; // 0: 待機 (Standby), 1: 掃描中 (Scanning)
+volatile uint8_t user_btn_toggle_pending = 0; // EXTI 按下時由 BSP_PB_Callback 置位
 // === BLE 點雲傳輸 Handles ===
 uint16_t ScannerServHandle;
 uint16_t PointCharHandle;
@@ -238,10 +239,15 @@ int main(void)
   MX_USB_OTG_FS_PCD_Init();
   MX_BlueNRG_MS_Init();
   /* USER CODE BEGIN 2 */
-    // === 修改：喚醒按鍵，但使用「純讀取模式」不要用中斷！ ===
-    BSP_PB_Init(BUTTON_USER, BUTTON_MODE_GPIO);
     BSP_LED_Init(LED2);
-    // ===============================================
+    /* BlueNRG User_Init 已註冊 EXTI；改為按下瞬間觸發（FALLING + 上拉） */
+    {
+      GPIO_InitTypeDef gi = {0};
+      gi.Pin = USER_BUTTON_PIN;
+      gi.Mode = GPIO_MODE_IT_FALLING;
+      gi.Pull = GPIO_PULLUP;
+      HAL_GPIO_Init(USER_BUTTON_GPIO_PORT, &gi);
+    }
 
     Add_Scanner_Service();
     Set_DeviceConnectable();
@@ -969,7 +975,7 @@ void StartTask04(void *argument)
   /* USER CODE BEGIN StartTask04 */
   static char uart_buf[128];
   uint8_t last_state = 0;
-  uint8_t btn_prev = 0;
+  uint32_t last_btn_toggle_ms = 0;
   int len;
   BlePoint_t point;
 
@@ -996,12 +1002,15 @@ void StartTask04(void *argument)
         HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, 10);
     }*/
 
-    // === 2. 按鍵輪詢 ===
-    uint8_t btn_now = BSP_PB_GetState(BUTTON_USER);
-    if (btn_now == 1 && btn_prev == 0) {
-        is_scanning = !is_scanning;
+    // === 2. 按鍵：EXTI 中斷置位，此處消抖後切換（不受 200 ms 輪詢限制）===
+    if (user_btn_toggle_pending) {
+        user_btn_toggle_pending = 0;
+        uint32_t now_ms = osKernelGetTickCount();
+        if ((now_ms - last_btn_toggle_ms) >= 250U) {
+            is_scanning = !is_scanning;
+            last_btn_toggle_ms = now_ms;
+        }
     }
-    btn_prev = btn_now;
 
     // === 3. 狀態切換回饋 ===
     if (is_scanning != last_state) {
