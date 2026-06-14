@@ -1,54 +1,141 @@
-# 🚀 Wireless 3D Handheld Scanner (無線 3D 手持掃描儀)
+# Handheld-3D-Spatial-Scanner（手持3D空間掃描儀）
+
+## 專題資訊
+
+
+| 項目      | 內容                                                           |
+| ------- | ------------------------------------------------------------ |
+| 平台      | STM32L475E IoT Node（B-L475E-IOT01A1）                         |
+| 書面報告    | `[docs/手持3D空間掃描儀專題期末報告.pdf](docs/手持3D空間掃描儀專題期末報告.pdf)`       |
+| 簡報      | `[docs/手持3D空間掃描儀專題期末報告.pptx](docs/手持3D空間掃描儀專題期末報告.pptx)`     |
+| Demo 影片 | [https://youtu.be/wLbfHWUSziY](https://youtu.be/wLbfHWUSziY) |
+
+
+---
 
 ## 專案概述
-本專案的目標是使用 STM32CubeIDE，在 STM32L475E IOT Node 開發板上整合多重感測器與藍牙通訊，打造出一台完全無線的 3D 手持掃描儀，並透過 Python 即時渲染點雲圖。
+
+本專案在 **STM32 IoT Node** 上整合 ToF 測距、IMU 姿態融合與 BLE 無線通訊，實作一台可手持的 3D 空間掃描原型。使用者手持開發板移動，系統將 **距離 + 板子朝向** 轉換為 3D 座標，經 BLE 傳至 PC，以 Python 即時顯示點雲。
+
+**核心思路：** ToF 直接量距離（非 IMU 加速度雙重積分）+ Madgwick 估算姿態 → 幾何投影得到 (X, Y, Z)。
+
+---
 
 ## 實作功能
-* **硬體設備：** STM32L475E IOT Node (B-L475E-IOT01A1)
-* **感測器整合：** * 透過 I2C 讀取 VL53L0X (ToF 測距儀) 獲取前方物體距離。
-    * 透過 I2C 讀取 LSM6DSL (IMU 加速度計/陀螺儀) 計算開發板的即時姿態角 (Roll/Pitch)。
-* **座標轉換：** 結合距離與姿態角，透過三角函數將極座標轉換為三維直角座標 (X, Y, Z)。
-* **RTOS 多執行緒：** 導入 FreeRTOS，將感測、運算、通訊等任務分離，並加入防飢餓 (Starvation) 與死結 (Deadlock) 的保護機制。
-* **BLE 無線傳輸：** 捨棄有線 UART，使用低功耗藍牙 (BLE) 將座標資料以 33Hz 的頻率即時傳送至電腦端。
-* **智慧狀態指示：** * 藍色實體按鍵 (User Button) 控制「掃描/待機」狀態。
-    * 綠色 LED2 (PB14) 作為藍牙連線指示燈。
-    * 綠色 LED (PA5) 作為掃描狀態指示燈 (燈亮即代表紀錄中)。
 
-## 如何使用 `ble_3d_scanner.py` 進行即時繪圖
-本專案附帶了一個 Python 腳本 `ble_3d_scanner.py`，可以透過電腦的藍牙接收開發板傳來的 3D 座標數據，並在畫布上即時渲染出空間點雲 (Point Cloud)。
+### 硬體
 
-### 執行步驟：
 
-**1. 安裝必備套件**
-請確保你的電腦已安裝 Python 3.8 或以上版本。打開終端機 (Terminal / 命令提示字元 / PowerShell)，輸入以下指令安裝所需的藍牙通訊與繪圖套件：
+| 元件  | 型號                          | 用途                     |
+| --- | --------------------------- | ---------------------- |
+| 主控  | STM32L475 (B-L475E-IOT01A1) | FreeRTOS、感測整合          |
+| 距離  | VL53L0X                     | ToF 測距（mm）             |
+| 慣性  | LSM6DSL                     | 加速度 + 陀螺儀              |
+| 磁力  | LIS3MDL（板載）                 | 程式支援 9 軸；Demo 版以 6 軸運作 |
+| 無線  | BlueNRG-MS (BLE)            | GATT Notify 傳送點座標      |
+| 操作  | 藍色 User Button              | 開始／停止掃描                |
+| 指示  | PA5 綠燈                      | 掃描中亮起                  |
+
+
+### 軟體重點
+
+- **姿態融合：** Madgwick AHRS（`Core/Src/ahrs.c`），輸出四元數
+- **3D 座標：** 四元數旋轉 ToF 方向向量，減去按鍵基準點
+- **FreeRTOS 五 Task：** ToF / Logic / IMU / Telemetry / BLE
+- **RTOS API：** Message Queue、Mutex（I2C2 互斥）、Task 優先權分工
+- **BLE 傳輸：** 自訂 GATT Service，約 **5 Hz** 送點（12 bytes = 3× float）
+- **上電行為：** 韌體自動初始化感測器並開始 BLE 廣播
+
+---
+
+## 系統架構（FreeRTOS）
+
+```
+ToF Task (High)     → distQueue → Logic Task → global_tof_dmm
+IMU Task (Normal)   → Madgwick → global_q0~q3
+Telemetry Task      → 按鍵 / LED / 算 XYZ → blePointQueue (~5 Hz)
+BLE Task (Normal)   → MX_BlueNRG_MS_Process + GATT Notify
+```
+
+ToF 與 IMU 共用 **I2C2**，以 `i2c2Mutex` 保護。
+
+---
+
+## 開發環境
+
+- **IDE：** STM32CubeIDE
+- **RTOS：** FreeRTOS（CMSIS-RTOS v2）
+- **PC 端：** Python 3.8+、`bleak`、`matplotlib`
+
+主要原始碼：
+
+
+| 路徑                                | 說明                         |
+| --------------------------------- | -------------------------- |
+| `Core/Src/main.c`                 | RTOS Task、座標計算、GATT 服務     |
+| `Core/Src/ahrs.c`                 | Madgwick 姿態濾波              |
+| `BlueNRG_MS/App/app_bluenrg_ms.c` | BlueNRG 協定栈                |
+| `BlueNRG_MS/App/sensor.c`         | BLE 連線、Connection Interval |
+| `ble_3d_scanner.py`               | PC 端 BLE 接收與 3D 繪圖         |
+
+
+---
+
+## 如何使用（Demo 流程）
+
+### 1. 燒錄韌體
+
+1. 以 STM32CubeIDE 開啟本專案並 Build
+2. 燒錄至 B-L475E-IOT01A1
+3. 開發板 **USB 上電** → 韌體自動執行、BLE 開始廣播
+
+### 2. 安裝 PC 端套件
+
 ```bash
 pip install bleak matplotlib
 ```
 
-**2. 確認 MAC 位址**
-開啟 `ble_3d_scanner.py` 腳本，確認程式碼中的 `DEVICE_ADDRESS` 變數已設定為你手中開發板的正確 MAC 位址。
+### 3. 設定 BLE MAC 位址
+
+編輯 `ble_3d_scanner.py` 中的 `DEVICE_ADDRESS`：
+
 ```python
-DEVICE_ADDRESS = "C2:D4:FE:69:B3:EB" # 請替換為實際位址
+DEVICE_ADDRESS = "C4:CA:07:9A:93:BA"  # 請改為你的開發板 MAC
 ```
 
-**3. 硬體準備與連線**
-* 將燒錄好韌體的 STM32 開發板接上電源。
-* 觀察板上的 **LED2 (PB14)**，若呈現持續閃爍，代表連線上了。
-* **確保手機的藍牙未連線至開發板**，避免佔用頻道。
-* 在電腦終端機執行腳本：
+### 4. 連線與掃描
+
 ```bash
 python ble_3d_scanner.py
 ```
-當看到 `✅ 連線成功！正在開啟資料通道...` 並跳出 3D 視窗時，即代表連線完成。
 
-**4. 開始掃描**
-* 拿起開發板，按下 **藍色按鈕 (User Button)**。
-* 板上的 **PA5 指示燈 (綠燈)** 亮起，代表開始記錄點雲。
-* 移動開發板進行掃描，電腦螢幕會即時繪製出 3D 軌跡。
-* 掃描完畢後，再次按下 **藍色按鈕** 停止紀錄 (綠燈熄滅)。
+1. 確認終端機顯示 `連線成功`
+2. 按開發板 **藍色按鈕** → **PA5 綠燈亮** → 開始記錄點雲
+3. 手持板子掃描，PC 即時顯示 3D 軌跡
+4. 再按藍鍵 → 綠燈滅 → 停止記錄
 
-### 3D 畫布快捷鍵
-* `1`：切換至 **YZ 平面** (側視圖)
-* `2`：切換至 **XZ 平面** (正視圖)
-* `3`：切換至 **XY 平面** (俯視圖)
-* `0`：恢復 **預設 3D 立體視角**
+**注意：**
+
+- 掃描前請確認 **手機藍牙未佔用** 開發板連線
+- 小範圍、以感測器為中心旋轉的掃描效果較佳
+
+### 5. 3D 畫布快捷鍵
+
+
+| 按鍵  | 功能         |
+| --- | ---------- |
+| `1` | YZ 平面（側視）  |
+| `2` | XZ 平面（正視）  |
+| `3` | XY 平面（俯視）  |
+| `0` | 恢復預設 3D 視角 |
+
+
+---
+
+## 參考文獻
+
+1. Madgwick, S. O. H. (2010). *An efficient orientation filter for inertial and inertial/magnetic sensor arrays.* [https://x-io.co.uk/downloads/madgwick_internal_report.pdf](https://x-io.co.uk/downloads/madgwick_internal_report.pdf)
+2. STMicroelectronics. B-L475E-IOT01A1 Discovery kit User Manual
+3. STMicroelectronics. STM32L475VG Datasheet
+4. AHRS Python — Madgwick Filter: [https://ahrs.readthedocs.io/en/latest/filters/madgwick.html](https://ahrs.readthedocs.io/en/latest/filters/madgwick.html)
+
